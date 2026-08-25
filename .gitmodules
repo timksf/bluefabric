@@ -1,0 +1,3 @@
+[submodule "blueaxi"]
+	path = dep/blueaxi
+	url = https://github.com/timksf/blueaxi.git

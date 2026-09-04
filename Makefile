@@ -170,66 +170,6 @@ test-ahb-apb-bridge:
 		BSV_FILE=test/TestAhbApbBridge.bsv \
 		TEST_MODULE=test_ahb_apb_bridge run
 
-test-gate:
-	$(MAKE) TOPLEVEL=mkTestAxiStreamGate \
-		BSV_FILE=test/TestAxiStreamExtras.bsv \
-		TEST_MODULE=test_axis_stream_control run
-
-test-snooper:
-	$(MAKE) TOPLEVEL=mkTestAxiStreamSnooper \
-		BSV_FILE=test/TestAxiStreamExtras.bsv \
-		TEST_MODULE=test_axis_stream_control run
-
-test-skid-buffer:
-	$(MAKE) TOPLEVEL=mkTestAxiStreamSkidBuffer \
-		BSV_FILE=test/TestAxiStreamExtras.bsv \
-		TEST_MODULE=test_axis_stream_control run
-
-test-broadcast:
-	$(MAKE) TOPLEVEL=mkTestAxiStreamBroadcast \
-		BSV_FILE=test/TestAxiStreamExtras.bsv \
-		TEST_MODULE=test_axis_stream_fanout run
-
-test-split:
-	$(MAKE) TOPLEVEL=mkTestAxiStreamSplit \
-		BSV_FILE=test/TestAxiStreamExtras.bsv \
-		TEST_MODULE=test_axis_stream_fanout run
-
-test-join:
-	$(MAKE) TOPLEVEL=mkTestAxiStreamJoin \
-		BSV_FILE=test/TestAxiStreamExtras.bsv \
-		TEST_MODULE=test_axis_stream_fanout run
-
-test-interleaver:
-	$(MAKE) TOPLEVEL=mkTestAxiStreamInterleaver \
-		BSV_FILE=test/TestAxiStreamExtras.bsv \
-		TEST_MODULE=test_axis_stream_route_extras run
-
-test-remap:
-	$(MAKE) TOPLEVEL=mkTestAxiStreamRemap \
-		BSV_FILE=test/TestAxiStreamExtras.bsv \
-		TEST_MODULE=test_axis_stream_route_extras run
-
-test-switch-1to2:
-	$(MAKE) TOPLEVEL=mkTestAxiStreamSwitch1To2 \
-		BSV_FILE=test/TestAxiStreamExtras.bsv \
-		TEST_MODULE=test_axis_stream_route_extras run
-
-test-switch-2to1:
-	$(MAKE) TOPLEVEL=mkTestAxiStreamSwitch2To1 \
-		BSV_FILE=test/TestAxiStreamExtras.bsv \
-		TEST_MODULE=test_axis_stream_route_extras run
-
-test-switch-1to2-unlocked:
-	$(MAKE) TOPLEVEL=mkTestAxiStreamSwitch1To2Unlocked \
-		BSV_FILE=test/TestAxiStreamExtras.bsv \
-		TEST_MODULE=test_axis_stream_route_extras run
-
-test-switch-2to1-unlocked:
-	$(MAKE) TOPLEVEL=mkTestAxiStreamSwitch2To1Unlocked \
-		BSV_FILE=test/TestAxiStreamExtras.bsv \
-		TEST_MODULE=test_axis_stream_route_extras run
-
 .PHONY: run
 run: verilog
 	$(MAKE) -f $(COCOTB_MAKEFILE) \

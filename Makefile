@@ -23,11 +23,6 @@ SOC_MAP_BUILD_DIR ?= build/mkTestSocMaps
 .PHONY: test-apb-slave test-apb-slave-bypass test-apb-master test-apb-mux test-apb-master-mux
 .PHONY: test-axi-lite-mux
 .PHONY: test-ahb-slave test-ahb-slave-bypass test-ahb-master test-ahb-mux test-ahb-master-mux test-ahb-apb-bridge
-.PHONY: test-gate test-snooper test-skid-buffer
-.PHONY: test-broadcast test-split test-join
-.PHONY: test-interleaver test-remap
-.PHONY: test-switch-1to2 test-switch-2to1
-.PHONY: test-switch-1to2-unlocked test-switch-2to1-unlocked
 
 test: test-register test-register-minimal test-fifo test-async-fifo
 test: test-connections

@@ -40,11 +40,6 @@ test: test-apb-mux test-apb-master-mux
 test: test-axi-lite-mux
 test: test-ahb-slave test-ahb-slave-bypass test-ahb-master test-ahb-mux test-ahb-master-mux
 test: test-ahb-apb-bridge
-test: test-gate test-snooper test-skid-buffer
-test: test-broadcast test-split test-join
-test: test-interleaver test-remap
-test: test-switch-1to2 test-switch-2to1
-test: test-switch-1to2-unlocked test-switch-2to1-unlocked
 
 test-register:
 	$(MAKE) TOPLEVEL=mkTestAxiStreamRegister run

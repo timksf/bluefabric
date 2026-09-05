@@ -39,7 +39,7 @@ module mkAxi4Full2Lite(Axi4Full2Lite_ifc#(aw, dw, iw, uw));
         let req <- i_s_rd.request.get;
 
         Bool aligned    = (req.addr & ((1 << pack(req.burst_size)) - 1)) == 0;
-        Bool error      = !aligned || req.burst_type == WRAP || req.burst_type == FIXED;
+        Bool error      = !aligned || req.burst_type != INCR;
 
         rg_rd_err       <= error;
         rg_burst_cnt    <= req.burst_length;

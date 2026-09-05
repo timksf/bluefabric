@@ -1,9 +1,11 @@
-TOPLEVEL ?= mkTestAxiStreamRegister
-TEST_MODULE ?= test_axis_stream_buffers
-BSV_FILE ?= test/TestAxiStreamBuffers.bsv
+TOPLEVEL ?= mkTestGenericArbiter
+TEST_MODULE ?= test_generic_arbiter
+BSV_FILE ?= test/TestRouting.bsv
 
 BUILD_DIR := build/$(TOPLEVEL)
 BSC_DIR := $(BUILD_DIR)/bsc
+SIM_DIR := $(BUILD_DIR)/sim
+BLUESIM_BINARY := $(BUILD_DIR)/$(TOPLEVEL)
 VERILOG_DIR := $(BUILD_DIR)/verilog
 COCOTB_MAKEFILE := $(shell cocotb-config --makefiles)/Makefile.sim
 BLUESPEC_VERILOG := $(shell dirname $$(dirname $$(command -v bsc)))/lib/Verilog
@@ -14,17 +16,13 @@ export COCOTB_LOG_LEVEL
 
 SOC_MAP_BUILD_DIR ?= build/mkTestSocMaps
 
-.PHONY: test test-register test-register-minimal test-fifo test-async-fifo
 .PHONY: test-connections
 .PHONY: test-soc-maps
-.PHONY: test-up-converter
-.PHONY: test-down-converter test-compactor verilog clean
-.PHONY: test-arbiter test-mux test-demux test-crossbar
 .PHONY: test-apb-slave test-apb-slave-bypass test-apb-master test-apb-mux test-apb-master-mux
 .PHONY: test-axi-lite-mux
 .PHONY: test-ahb-slave test-ahb-slave-bypass test-ahb-master test-ahb-mux test-ahb-master-mux test-ahb-apb-bridge
+.PHONY: bluesim
 
-test: test-register test-register-minimal test-fifo test-async-fifo
 test: test-connections
 test: test-soc-maps
 test: test-up-converter
@@ -35,15 +33,6 @@ test: test-apb-mux test-apb-master-mux
 test: test-axi-lite-mux
 test: test-ahb-slave test-ahb-slave-bypass test-ahb-master test-ahb-mux test-ahb-master-mux
 test: test-ahb-apb-bridge
-
-test-register:
-	$(MAKE) TOPLEVEL=mkTestAxiStreamRegister run
-
-test-register-minimal:
-	$(MAKE) TOPLEVEL=mkTestAxiStreamRegisterMinimal run
-
-test-fifo:
-	$(MAKE) TOPLEVEL=mkTestAxiStreamFifo run
 
 test-connections:
 	$(MAKE) TOPLEVEL=mkTestConnections \
@@ -62,43 +51,10 @@ test-soc-maps:
 		-o $(SOC_MAP_BUILD_DIR)/test_soc_maps
 	$(SOC_MAP_BUILD_DIR)/test_soc_maps
 
-test-async-fifo:
-	$(MAKE) TOPLEVEL=mkTestAxiStreamAsyncFifo run
-
-test-up-converter:
-	$(MAKE) TOPLEVEL=mkTestAxiStreamUp \
-		BSV_FILE=test/TestAxiStreamConverters.bsv \
-		TEST_MODULE=test_axis_stream_converters run
-
-test-down-converter:
-	$(MAKE) TOPLEVEL=mkTestAxiStreamDown \
-		BSV_FILE=test/TestAxiStreamConverters.bsv \
-		TEST_MODULE=test_axis_stream_converters run
-
-test-compactor:
-	$(MAKE) TOPLEVEL=mkTestAxiStreamCompactor \
-		BSV_FILE=test/TestAxiStreamConverters.bsv \
-		TEST_MODULE=test_axis_stream_converters run
-
 test-arbiter:
 	$(MAKE) TOPLEVEL=mkTestGenericArbiter \
 		BSV_FILE=test/TestRouting.bsv \
 		TEST_MODULE=test_generic_arbiter run
-
-test-mux:
-	$(MAKE) TOPLEVEL=mkTestAxiStreamMux \
-		BSV_FILE=test/TestRouting.bsv \
-		TEST_MODULE=test_axis_stream_routing run
-
-test-demux:
-	$(MAKE) TOPLEVEL=mkTestAxiStreamDemux \
-		BSV_FILE=test/TestRouting.bsv \
-		TEST_MODULE=test_axis_stream_routing run
-
-test-crossbar:
-	$(MAKE) TOPLEVEL=mkTestAxiStreamCrossbar \
-		BSV_FILE=test/TestRouting.bsv \
-		TEST_MODULE=test_axis_stream_routing run
 
 test-apb-slave:
 	$(MAKE) TOPLEVEL=mkTestApbSlave \
@@ -124,6 +80,11 @@ test-apb-master-mux:
 	$(MAKE) TOPLEVEL=mkTestApbMasterMux \
 		BSV_FILE=test/TestBusMux.bsv \
 		TEST_MODULE=test_bus_mux run
+
+test-axi-full2lite:
+	$(MAKE) TOPLEVEL=mkTestAxi4Full2Lite \
+		BSV_FILE=test/TestAxi4Full2Lite.bsv \
+		TEST_MODULE=test_axi4_full2lite bluesim
 
 test-axi-lite-mux:
 	$(MAKE) TOPLEVEL=mkTestAxi4LiteMux \
@@ -172,6 +133,21 @@ run: verilog
 		COMPILE_ARGS="-y $(BLUESPEC_VERILOG)" \
 		SIM_BUILD=$(BUILD_DIR)/sim \
 		COCOTB_RESULTS_FILE=$(BUILD_DIR)/results.xml
+
+bluesim:
+	mkdir -p $(BSC_DIR) $(SIM_DIR)
+	bsc -u -sim -g $(TOPLEVEL) \
+		-D BSV_TIMESCALE=1ns/1ps \
+		-aggressive-conditions \
+		-bdir $(BSC_DIR) \
+		-simdir $(SIM_DIR) \
+		-p +:src:src/axis:src/apb:src/axi:src/axi/blueaxi/src:src/ahb:src/common:src/soc:test \
+		$(BSV_FILE)
+	bsc -sim -e $(TOPLEVEL) \
+		-bdir $(BSC_DIR) \
+		-simdir $(SIM_DIR) \
+		-o $(BLUESIM_BINARY)
+	$(BLUESIM_BINARY) -V $(SIM_DIR)/dump.vcd
 
 verilog:
 	mkdir -p $(BSC_DIR) $(VERILOG_DIR)

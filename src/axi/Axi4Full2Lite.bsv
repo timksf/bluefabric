@@ -27,7 +27,7 @@ module mkAxi4Full2Lite(Axi4Full2Lite_ifc#(aw, dw, iw, uw));
     /* read channel */
     Reg#(Bool)      rg_rd_busy  <- mkReg(False);
     Reg#(Bool)      rg_rd_err   <- mkReg(False);
-    Reg#(UInt#(8))  rg_rd_cnt   <- mkReg(0);
+    Reg#(Bit#(8))   rg_rd_cnt   <- mkReg(0);
     //channel state that has to be kept track of until the last response
     Reg#(AXI4_Prot) rg_rd_prot  <- mkRegU;
     Reg#(Bit#(aw))  rg_rd_addr  <- mkRegU;
@@ -36,16 +36,20 @@ module mkAxi4Full2Lite(Axi4Full2Lite_ifc#(aw, dw, iw, uw));
     Reg#(Bit#(3))   rg_rd_incr  <- mkRegU;
 
     /* write channel */
-    Reg#(Bool)      rg_wr_busy  <- mkReg(False);
-    Reg#(Bool)      rg_wr_err   <- mkReg(False);
-    Reg#(UInt#(8))  rg_wr_cnt   <- mkReg(0);
-    Reg#(AXI4_Prot) rg_wr_prot  <- mkRegU;
-    Reg#(Bit#(aw))  rg_wr_addr  <- mkRegU;
-    Reg#(Bit#(uw))  rg_wr_usr   <- mkRegU;
-    Reg#(Bit#(iw))  rg_wr_id    <- mkRegU;
-    Reg#(Bit#(3))   rg_wr_incr  <- mkRegU;
+    Reg#(Bool)          rg_wr_busy      <- mkReg(False);
+    Reg#(Bool)          rg_wr_err       <- mkReg(False);
+    Reg#(Bit#(8))       rg_wr_cnt       <- mkReg(0);
+    Reg#(Bit#(8))       rg_wr_rsp_cnt   <- mkReg(0);
+    Reg#(AXI4_Prot)     rg_wr_prot      <- mkRegU;
+    Reg#(Bit#(aw))      rg_wr_addr      <- mkRegU;
+    Reg#(Bit#(uw))      rg_wr_usr       <- mkRegU;
+    Reg#(Bit#(iw))      rg_wr_id        <- mkRegU;
+    Reg#(Bit#(3))       rg_wr_incr      <- mkRegU;
+    Reg#(AXI4_Response) rg_wr_resp      <- mkRegU;
+    Reg#(Bool)          rg_wr_dataerr   <- mkRegU;
+    Reg#(Bool)          rg_wr_datadone  <- mkReg(False);
+    Reg#(Bool)          rg_wr_respdone  <- mkReg(False);
 
-    
     rule raccept_rd_rq if(!rg_rd_busy);
         let req <- i_s_rd.request.get;
 
@@ -53,7 +57,7 @@ module mkAxi4Full2Lite(Axi4Full2Lite_ifc#(aw, dw, iw, uw));
         Bool error      = !aligned || req.burst_type != INCR;
 
         rg_rd_err   <= error;
-        rg_rd_cnt   <= req.burst_length;
+        rg_rd_cnt   <= pack(req.burst_length);
         rg_rd_busy  <= True;
         rg_rd_addr  <= req.addr;
         rg_rd_prot  <= req.prot;
@@ -127,56 +131,70 @@ module mkAxi4Full2Lite(Axi4Full2Lite_ifc#(aw, dw, iw, uw));
         Bool error      = !aligned || req.burst_type != INCR;
         //lock, cache, qos, region are ignored
 
-        rg_wr_err   <= error;
-        rg_wr_cnt   <= req.burst_length;
-        rg_wr_busy  <= True;
-        rg_wr_addr  <= req.addr;
-        rg_wr_prot  <= req.prot;
-        rg_wr_usr   <= req.user;
-        rg_wr_id    <= req.id;
-        rg_wr_incr  <= pack(req.burst_size);
+        rg_wr_err       <= error;
+        rg_wr_cnt       <= pack(req.burst_length);
+        rg_wr_rsp_cnt   <= pack(req.burst_length);
+        rg_wr_busy      <= True;
+        rg_wr_addr      <= req.addr;
+        rg_wr_prot      <= req.prot;
+        rg_wr_usr       <= req.user;
+        rg_wr_id        <= req.id;
+        rg_wr_incr      <= pack(req.burst_size);
+        rg_wr_resp      <= OKAY;
+        rg_wr_dataerr   <= False;
+        rg_wr_datadone  <= False;
+        rg_wr_respdone  <= False;
     endrule
 
-    rule rfwd_wr_data if(rg_wr_busy && !rg_wr_err);
+    rule rfwd_wr_data if(rg_wr_busy && !rg_wr_err && !rg_wr_datadone);
         let req <- i_s_wr.request_data.get;
+        Bool last = rg_wr_cnt == 0;
         i_m_wr.request.put(
             AXI4_Lite_Write_Rq_Pkg{ addr: rg_wr_addr, data: req.data, strb: req.strb, prot: unpack(pack(rg_wr_prot)) }
         );
-        if(!req.last) begin
-            rg_wr_addr <= rg_wr_addr + (1 << rg_wr_incr);
+        //WLAST mismatches with AWLEN are reported as errors.
+        rg_wr_dataerr <= rg_wr_dataerr || (req.last != last);
+        if(!last) begin
+            rg_wr_addr      <= rg_wr_addr + (1 << rg_wr_incr);
+            rg_wr_cnt       <= rg_wr_cnt - 1;
         end else begin
-            //burst ends here
-            
+            rg_wr_datadone  <= True;
         end
     endrule
 
-    rule rdisc_wr_data if(rg_wr_busy && rg_wr_err);
-        let __unused <- i_s_wr.request_data.get;
-    endrule
-
-    rule rfwd_wr_rsp if(rg_wr_busy && !rg_wr_err);
-        let rsp <- i_m_wr.response.get;
+    rule rdisc_wr_data if(rg_wr_busy && rg_wr_err && !rg_wr_datadone);
+        //discard all data beats associated with a rejected write address request
+        let req <- i_s_wr.request_data.get;
         if(rg_wr_cnt == 0) begin
-            rg_wr_busy <= False;
-            //there is only a single response expected for a burst
-            i_s_wr.response.put(
-                AXI4_Write_Rs { id: rg_wr_id, resp: unpack(pack(rsp.resp)), user: rg_wr_usr }
-            );
+            rg_wr_datadone  <= True;
         end else begin
             rg_wr_cnt <= rg_wr_cnt - 1;
         end
     endrule
 
-    rule rwr_err if(rg_wr_busy && rg_wr_err);
-        i_s_wr.response.put(
-            AXI4_Write_Rs { id: rg_wr_id, resp: SLVERR, user: rg_wr_usr }
-        );
-        if(rg_wr_cnt == 0) begin
-            rg_wr_busy  <= False;
-            rg_wr_err   <= False;
-        end else begin
-            rg_wr_cnt   <= rg_wr_cnt - 1;
+    rule r_wr_disc_rsp if(rg_wr_busy && !rg_wr_err && !rg_wr_respdone);
+        //retain the first Lite error while draining every response.
+        let rsp <- i_m_wr.response.get;
+        if(rg_wr_resp == OKAY && rsp.resp != OKAY) begin
+            rg_wr_resp <= unpack(pack(rsp.resp));
         end
+        if(rg_wr_rsp_cnt > 0) begin
+            rg_wr_rsp_cnt   <= rg_wr_rsp_cnt - 1;
+        end else begin
+            rg_wr_respdone <= True;
+        end
+    endrule
+
+    rule r_wr_rsp if(rg_wr_busy && rg_wr_datadone && (rg_wr_err || rg_wr_respdone));
+        //generate a single response, either for a rejected request or a finished burst
+        AXI4_Response resp = (rg_wr_err || rg_wr_dataerr) ? SLVERR : rg_wr_resp;
+        i_s_wr.response.put(
+            AXI4_Write_Rs { id: rg_wr_id, resp: resp, user: rg_wr_usr }
+        );
+        rg_wr_busy      <= False;
+        rg_wr_err       <= False;
+        rg_wr_datadone  <= False;
+        rg_wr_respdone  <= False;
     endrule
 
 

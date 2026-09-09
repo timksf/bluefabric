@@ -6,6 +6,8 @@ BUILD_DIR := build/$(TOPLEVEL)
 BSC_DIR := $(BUILD_DIR)/bsc
 SIM_DIR := $(BUILD_DIR)/sim
 BLUESIM_BINARY := $(BUILD_DIR)/$(TOPLEVEL)
+# Bluesim's bs_prim_mod_reg.h triggers GCC warnings for its VCD port-name buffers.
+BLUESIM_CXXFLAGS ?= -Wno-format-truncation
 VERILOG_DIR := $(BUILD_DIR)/verilog
 COCOTB_MAKEFILE := $(shell cocotb-config --makefiles)/Makefile.sim
 BLUESPEC_VERILOG := $(shell dirname $$(dirname $$(command -v bsc)))/lib/Verilog
@@ -144,6 +146,7 @@ bluesim:
 		-p +:src:src/axis:src/apb:src/axi:src/axi/blueaxi/src:src/ahb:src/common:src/soc:test \
 		$(BSV_FILE)
 	bsc -sim -e $(TOPLEVEL) \
+		$(foreach flag,$(BLUESIM_CXXFLAGS),-Xc++ $(flag)) \
 		-bdir $(BSC_DIR) \
 		-simdir $(SIM_DIR) \
 		-o $(BLUESIM_BINARY)

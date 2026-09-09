@@ -13,7 +13,7 @@ import ApbMasterMux :: *;
 import ApbSlave :: *;
 import ApbSlaveMux :: *;
 
-// import Axi4Full2Lite :: *;
+import Axi4Full2Lite :: *;
 import Axi4LiteSlaveMux :: *;
 
 import Ahb :: *;
@@ -36,7 +36,7 @@ export ApbMasterMux :: *;
 export ApbSlave :: *;
 export ApbSlaveMux :: *;
 
-// export Axi4Full2Lite :: *;
+export Axi4Full2Lite :: *;
 export Axi4LiteSlaveMux :: *;
 
 export Ahb :: *;

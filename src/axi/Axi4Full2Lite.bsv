@@ -48,7 +48,6 @@ module mkAxi4Full2Lite(Axi4Full2Lite_ifc#(aw, dw, iw, uw));
     Reg#(AXI4_Response) rg_wr_resp      <- mkRegU;
     Reg#(Bool)          rg_wr_dataerr   <- mkRegU;
     Reg#(Bool)          rg_wr_datadone  <- mkReg(False);
-    Reg#(Bool)          rg_wr_respdone  <- mkReg(False);
 
     rule raccept_rd_rq if(!rg_rd_busy);
         let req <- i_s_rd.request.get;
@@ -143,7 +142,6 @@ module mkAxi4Full2Lite(Axi4Full2Lite_ifc#(aw, dw, iw, uw));
         rg_wr_resp      <= OKAY;
         rg_wr_dataerr   <= False;
         rg_wr_datadone  <= False;
-        rg_wr_respdone  <= False;
     endrule
 
     rule rfwd_wr_data if(rg_wr_busy && !rg_wr_err && !rg_wr_datadone);
@@ -172,29 +170,33 @@ module mkAxi4Full2Lite(Axi4Full2Lite_ifc#(aw, dw, iw, uw));
         end
     endrule
 
-    rule r_wr_disc_rsp if(rg_wr_busy && !rg_wr_err && !rg_wr_respdone);
-        //retain the first Lite error while draining every response.
+    rule r_wr_disc_rsp if(rg_wr_busy && !rg_wr_err && rg_wr_rsp_cnt > 0);
+        //retain the first error from non-final Lite responses.
         let rsp <- i_m_wr.response.get;
         if(rg_wr_resp == OKAY && rsp.resp != OKAY) begin
             rg_wr_resp <= unpack(pack(rsp.resp));
         end
-        if(rg_wr_rsp_cnt > 0) begin
-            rg_wr_rsp_cnt   <= rg_wr_rsp_cnt - 1;
-        end else begin
-            rg_wr_respdone <= True;
-        end
+        rg_wr_rsp_cnt <= rg_wr_rsp_cnt - 1;
     endrule
 
-    rule r_wr_rsp if(rg_wr_busy && rg_wr_datadone && (rg_wr_err || rg_wr_respdone));
-        //generate a single response, either for a rejected request or a finished burst
-        AXI4_Response resp = (rg_wr_err || rg_wr_dataerr) ? SLVERR : rg_wr_resp;
+    rule r_wr_rsp if(rg_wr_busy && rg_wr_datadone && (rg_wr_err || rg_wr_rsp_cnt == 0));
+        AXI4_Response resp = rg_wr_resp;
+        if(!rg_wr_err) begin
+            //consume the final Lite response only when the Full response can be queued
+            let rsp <- i_m_wr.response.get;
+            if(resp == OKAY) begin
+                resp = unpack(pack(rsp.resp));
+            end
+        end
+        if(rg_wr_err || rg_wr_dataerr) begin
+            resp = SLVERR;
+        end
         i_s_wr.response.put(
             AXI4_Write_Rs { id: rg_wr_id, resp: resp, user: rg_wr_usr }
         );
         rg_wr_busy      <= False;
         rg_wr_err       <= False;
         rg_wr_datadone  <= False;
-        rg_wr_respdone  <= False;
     endrule
 
 

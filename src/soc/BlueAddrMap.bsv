@@ -128,7 +128,8 @@ function AddrMapHit_t#(aw) decode_addr_map_targets(
                 hit: True,
                 target_index: fromInteger(i),
                 global_addr: address,
-                offset: address - truncate(target_base)
+                // Validated maps use naturally aligned power-of-two windows.
+                offset: address & fromInteger(target.size - 1)
             };
         end
     end

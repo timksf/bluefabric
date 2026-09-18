@@ -5,12 +5,12 @@ import AddrMapDecoder :: *;
 import Vector :: *;
 import GetPut :: *;
 
-interface Axi4SlaveMux_ifc#(numeric type slave_count, numeric type aw, numeric type dw, numeric type iw, numeric type uw);
-    interface AXI4_Slave_Rd_Fab#(aw, dw, iw, uw) slave_read;
-    interface AXI4_Slave_Wr_Fab#(aw, dw, iw, uw) slave_write;
+interface Axi4SlaveMux_ifc#(numeric type n, numeric type aw, numeric type dw, numeric type iw, numeric type uw);
+    interface AXI4_Slave_Rd_Fab#(aw, dw, iw, uw) s_rd;
+    interface AXI4_Slave_Wr_Fab#(aw, dw, iw, uw) s_wr;
 
-    interface Vector#(slave_count, AXI4_Master_Rd_Fab#(aw, dw, iw, uw)) masters_read;
-    interface Vector#(slave_count, AXI4_Master_Wr_Fab#(aw, dw, iw, uw)) masters_write;
+    interface Vector#(n, AXI4_Master_Rd_Fab#(aw, dw, iw, uw)) m_rd;
+    interface Vector#(n, AXI4_Master_Wr_Fab#(aw, dw, iw, uw)) m_wr;
 endinterface
 
 // One outstanding burst per direction. Decode the whole span before forwarding;
@@ -18,12 +18,12 @@ endinterface
 module mkAxi4SlaveMux#(
     function AddrMapHit_t#(aw) decode_address(Bit#(aw) address, Bit#(aw) bytes),
     function Bool target_accepts(Bit#(aw) target, AXI4_BurstSize size)
-)(Axi4SlaveMux_ifc#(slave_count, aw, dw, iw, uw));
+)(Axi4SlaveMux_ifc#(n, aw, dw, iw, uw));
 
-    AXI4_Slave_Rd#(aw, dw, iw, uw)                        i_rd  <- mkAXI4_Slave_Rd(2, 2);
-    AXI4_Slave_Wr#(aw, dw, iw, uw)                        i_wr  <- mkAXI4_Slave_Wr(2, 2, 2);
-    Vector#(slave_count, AXI4_Master_Rd#(aw, dw, iw, uw)) i_mrd <- replicateM(mkAXI4_Master_Rd(2, 2, False));
-    Vector#(slave_count, AXI4_Master_Wr#(aw, dw, iw, uw)) i_mwr <- replicateM(mkAXI4_Master_Wr(2, 2, 2, False));
+    AXI4_Slave_Rd#(aw, dw, iw, uw)              i_rd  <- mkAXI4_Slave_Rd(2, 2);
+    AXI4_Slave_Wr#(aw, dw, iw, uw)              i_wr  <- mkAXI4_Slave_Wr(2, 2, 2);
+    Vector#(n, AXI4_Master_Rd#(aw, dw, iw, uw)) i_mrd <- replicateM(mkAXI4_Master_Rd(2, 2, False));
+    Vector#(n, AXI4_Master_Wr#(aw, dw, iw, uw)) i_mwr <- replicateM(mkAXI4_Master_Wr(2, 2, 2, False));
 
     function AddrMapHit_t#(aw) route_request(Bit#(aw) addr, UInt#(8) len, AXI4_BurstSize size, AXI4_BurstType burst);
         // Widen before calculating the span, including for small address buses.
@@ -35,7 +35,7 @@ module mkAxi4SlaveMux#(
                 (addr & ((1 << pack(size)) - 1)) != 0 ||
                 (start & 4095) + bytes > 4096 ||
                 start + bytes > (1 << valueOf(aw)) ||
-                hit.target_index >= fromInteger(valueOf(slave_count)) ||
+                hit.target_index >= fromInteger(valueOf(n)) ||
                 !target_accepts(hit.target_index, size)) begin
             hit.hit = False;
         end
@@ -70,7 +70,7 @@ module mkAxi4SlaveMux#(
         if(rg_rd_left == 0) rg_rd_busy <= False;
     endrule
 
-    for(Integer n = 0; n < valueOf(slave_count); n = n + 1) begin
+    for(Integer n = 0; n < valueOf(n); n = n + 1) begin
         rule r_read_response(rg_rd_busy && !rg_rd_miss && rg_rd_target == fromInteger(n));
             let rs <- i_mrd[n].response.get;
             i_rd.response.put(rs);
@@ -117,7 +117,7 @@ module mkAxi4SlaveMux#(
         rg_wr_busy <= False;
     endrule
 
-    for(Integer n = 0; n < valueOf(slave_count); n = n + 1) begin
+    for(Integer n = 0; n < valueOf(n); n = n + 1) begin
         rule r_write_response(rg_wr_busy && rg_wr_done && !rg_wr_miss && rg_wr_target == fromInteger(n));
             let rs <- i_mwr[n].response.get;
             if(rg_wr_bad_last) rs.resp = SLVERR;
@@ -129,10 +129,10 @@ module mkAxi4SlaveMux#(
     function AXI4_Master_Rd_Fab#(aw, dw, iw, uw) read_fab(AXI4_Master_Rd#(aw, dw, iw, uw) x) = x.fab;
     function AXI4_Master_Wr_Fab#(aw, dw, iw, uw) write_fab(AXI4_Master_Wr#(aw, dw, iw, uw) x) = x.fab;
 
-    interface slave_read    = i_rd.fab;
-    interface slave_write   = i_wr.fab;
-    interface masters_read  = map(read_fab, i_mrd);
-    interface masters_write = map(write_fab, i_mwr);
+    interface s_rd = i_rd.fab;
+    interface s_wr = i_wr.fab;
+    interface m_rd = map(read_fab, i_mrd);
+    interface m_wr = map(write_fab, i_mwr);
 endmodule
 
 endpackage

@@ -8,59 +8,46 @@ import AXI4_Lite_Master :: *;
 import AXI4_Lite_Slave :: *;
 import AXI4_Lite_Types :: *;
 
-interface Axi4LiteSlaveMux_ifc#(
-    numeric type slave_count,
-    numeric type addr_w,
-    numeric type data_w
-);
-    interface AXI4_Lite_Slave_Rd_Fab#(addr_w, data_w) slave_read;
-    interface AXI4_Lite_Slave_Wr_Fab#(addr_w, data_w) slave_write;
-    interface Vector#(
-        slave_count,
-        AXI4_Lite_Master_Rd_Fab#(addr_w, data_w)
-    ) masters_read;
-    interface Vector#(
-        slave_count,
-        AXI4_Lite_Master_Wr_Fab#(addr_w, data_w)
-    ) masters_write;
+interface Axi4LiteSlaveMux_ifc#(numeric type n, numeric type aw, numeric type dw);
+    interface AXI4_Lite_Slave_Rd_Fab#(aw, dw) s_rd;
+    interface AXI4_Lite_Slave_Wr_Fab#(aw, dw) s_wr;
+    interface Vector#(n,AXI4_Lite_Master_Rd_Fab#(aw, dw)) m_rd;
+    interface Vector#(n,AXI4_Lite_Master_Wr_Fab#(aw, dw)) m_wr;
 endinterface
 
 module mkAxi4LiteSlaveMux#(
-    function AddrMapHit_t#(addr_w) decode_address(
-        Bit#(addr_w) address,
-        Bit#(addr_w) bytes
-    )
-)(Axi4LiteSlaveMux_ifc#(slave_count, addr_w, data_w));
+    function AddrMapHit_t#(aw) decode_address(Bit#(aw) address, Bit#(aw) bytes)
+)(Axi4LiteSlaveMux_ifc#(n, aw, dw));
 
     let reset_asserted <- isResetAsserted();
 
-    Wire#(Bool)           w_arvalid <- mkBypassWire;
-    Wire#(Bit#(addr_w))   w_araddr  <- mkBypassWire;
-    Wire#(AXI4_Lite_Prot) w_arprot  <- mkBypassWire;
-    Wire#(Bool)           w_rready  <- mkBypassWire;
+    Wire#(Bool)             w_arvalid <- mkBypassWire;
+    Wire#(Bit#(aw))         w_araddr  <- mkBypassWire;
+    Wire#(AXI4_Lite_Prot)   w_arprot  <- mkBypassWire;
+    Wire#(Bool)             w_rready  <- mkBypassWire;
 
-    Wire#(Bool)               w_arready <- mkDWire(False);
-    Wire#(Bool)               w_rvalid  <- mkDWire(False);
-    Wire#(Bit#(data_w))       w_rdata   <- mkDWire(0);
-    Wire#(AXI4_Lite_Response) w_rresp   <- mkDWire(OKAY);
+    Wire#(Bool)                 w_arready <- mkDWire(False);
+    Wire#(Bool)                 w_rvalid  <- mkDWire(False);
+    Wire#(Bit#(dw))             w_rdata   <- mkDWire(0);
+    Wire#(AXI4_Lite_Response)   w_rresp   <- mkDWire(OKAY);
 
-    Vector#(slave_count, Wire#(Bool))               vw_arready  <- replicateM(mkBypassWire);
-    Vector#(slave_count, Wire#(Bool))               vw_rvalid   <- replicateM(mkBypassWire);
-    Vector#(slave_count, Wire#(Bit#(data_w)))       vw_rdata    <- replicateM(mkBypassWire);
-    Vector#(slave_count, Wire#(AXI4_Lite_Response)) vw_rresp    <- replicateM(mkBypassWire);
+    Vector#(n, Wire#(Bool))                 vw_arready  <- replicateM(mkBypassWire);
+    Vector#(n, Wire#(Bool))                 vw_rvalid   <- replicateM(mkBypassWire);
+    Vector#(n, Wire#(Bit#(dw)))             vw_rdata    <- replicateM(mkBypassWire);
+    Vector#(n, Wire#(AXI4_Lite_Response))   vw_rresp    <- replicateM(mkBypassWire);
 
-    Bit#(addr_w) transfer_bytes = fromInteger(valueOf(TDiv#(data_w, 8)));
-    AddrMapHit_t#(addr_w) read_route = decode_address(w_araddr, transfer_bytes);
-    Bool read_route_valid = read_route.hit && read_route.target_index < fromInteger(valueOf(slave_count));
+    Bit#(aw) transfer_bytes = fromInteger(valueOf(TDiv#(dw, 8)));
+    AddrMapHit_t#(aw) read_route = decode_address(w_araddr, transfer_bytes);
+    Bool read_route_valid = read_route.hit && read_route.target_index < fromInteger(valueOf(n));
 
-    Reg#(Bool)         rg_read_valid  <- mkReg(False);
-    Reg#(Bool)         rg_read_miss   <- mkReg(False);
-    Reg#(Bit#(addr_w)) rg_read_target <- mkReg(0);
+    Reg#(Bool)      rg_read_valid  <- mkReg(False);
+    Reg#(Bool)      rg_read_miss   <- mkReg(False);
+    Reg#(Bit#(aw))  rg_read_target <- mkReg(0);
 
     rule r_select_read;
         if(!reset_asserted && !rg_read_valid) begin
             if(read_route_valid) begin
-                for(Integer n = 0; n < valueOf(slave_count); n = n + 1) begin
+                for(Integer n = 0; n < valueOf(n); n = n + 1) begin
                     if(read_route.target_index == fromInteger(n))
                         w_arready <= vw_arready[n];
                 end
@@ -71,7 +58,7 @@ module mkAxi4LiteSlaveMux#(
             w_rvalid <= True;
             w_rresp  <= DECERR;
         end else if(!reset_asserted) begin
-            for(Integer n = 0; n < valueOf(slave_count); n = n + 1) begin
+            for(Integer n = 0; n < valueOf(n); n = n + 1) begin
                 if(rg_read_target == fromInteger(n)) begin
                     w_rvalid <= vw_rvalid[n];
                     w_rdata  <= vw_rdata[n];
@@ -92,34 +79,34 @@ module mkAxi4LiteSlaveMux#(
         end
     endrule
 
-    Wire#(Bool)                      w_awvalid <- mkBypassWire;
-    Wire#(Bit#(addr_w))              w_awaddr  <- mkBypassWire;
-    Wire#(AXI4_Lite_Prot)            w_awprot  <- mkBypassWire;
-    Wire#(Bool)                      w_wvalid  <- mkBypassWire;
-    Wire#(Bit#(data_w))              w_wdata   <- mkBypassWire;
-    Wire#(Bit#(TDiv#(data_w, 8)))    w_wstrb   <- mkBypassWire;
-    Wire#(Bool)                      w_bready  <- mkBypassWire;
+    Wire#(Bool)                  w_awvalid <- mkBypassWire;
+    Wire#(Bit#(aw))              w_awaddr  <- mkBypassWire;
+    Wire#(AXI4_Lite_Prot)        w_awprot  <- mkBypassWire;
+    Wire#(Bool)                  w_wvalid  <- mkBypassWire;
+    Wire#(Bit#(dw))              w_wdata   <- mkBypassWire;
+    Wire#(Bit#(TDiv#(dw, 8)))    w_wstrb   <- mkBypassWire;
+    Wire#(Bool)                  w_bready  <- mkBypassWire;
 
     Wire#(Bool)               w_awready <- mkDWire(False);
     Wire#(Bool)               w_wready  <- mkDWire(False);
     Wire#(Bool)               w_bvalid  <- mkDWire(False);
     Wire#(AXI4_Lite_Response) w_bresp   <- mkDWire(OKAY);
 
-    Vector#(slave_count, Wire#(Bool))               vw_awready  <- replicateM(mkBypassWire);
-    Vector#(slave_count, Wire#(Bool))               vw_wready   <- replicateM(mkBypassWire);
-    Vector#(slave_count, Wire#(Bool))               vw_bvalid   <- replicateM(mkBypassWire);
-    Vector#(slave_count, Wire#(AXI4_Lite_Response)) vw_bresp    <- replicateM(mkBypassWire);
+    Vector#(n, Wire#(Bool))               vw_awready  <- replicateM(mkBypassWire);
+    Vector#(n, Wire#(Bool))               vw_wready   <- replicateM(mkBypassWire);
+    Vector#(n, Wire#(Bool))               vw_bvalid   <- replicateM(mkBypassWire);
+    Vector#(n, Wire#(AXI4_Lite_Response)) vw_bresp    <- replicateM(mkBypassWire);
 
-    AddrMapHit_t#(addr_w) write_route = decode_address(w_awaddr, transfer_bytes);
-    Bool write_route_valid = write_route.hit && write_route.target_index < fromInteger(valueOf(slave_count));
+    AddrMapHit_t#(aw) write_route = decode_address(w_awaddr, transfer_bytes);
+    Bool write_route_valid = write_route.hit && write_route.target_index < fromInteger(valueOf(n));
 
-    Reg#(Bool)           rg_write_valid     <- mkReg(False);
-    Reg#(Bool)           rg_write_miss      <- mkReg(False);
-    Reg#(Bool)           rg_write_addr_done <- mkReg(False);
-    Reg#(Bool)           rg_write_data_done <- mkReg(False);
-    Reg#(Bit#(addr_w))   rg_write_target    <- mkReg(0);
-    Reg#(Bit#(addr_w))   rg_write_address   <- mkReg(0);
-    Reg#(AXI4_Lite_Prot) rg_write_prot      <- mkReg(UNPRIV_SECURE_DATA);
+    Reg#(Bool)              rg_write_valid     <- mkReg(False);
+    Reg#(Bool)              rg_write_miss      <- mkReg(False);
+    Reg#(Bool)              rg_write_addr_done <- mkReg(False);
+    Reg#(Bool)              rg_write_data_done <- mkReg(False);
+    Reg#(Bit#(aw))          rg_write_target    <- mkReg(0);
+    Reg#(Bit#(aw))          rg_write_address   <- mkReg(0);
+    Reg#(AXI4_Lite_Prot)    rg_write_prot      <- mkReg(UNPRIV_SECURE_DATA);
 
     rule r_select_write;
         if(!reset_asserted && !rg_write_valid) begin
@@ -129,7 +116,7 @@ module mkAxi4LiteSlaveMux#(
                 if(rg_write_miss) begin
                     w_wready <= True;
                 end else begin
-                    for(Integer n = 0; n < valueOf(slave_count); n = n + 1) begin
+                    for(Integer n = 0; n < valueOf(n); n = n + 1) begin
                         if(rg_write_target == fromInteger(n))
                             w_wready <= vw_wready[n];
                     end
@@ -141,7 +128,7 @@ module mkAxi4LiteSlaveMux#(
                 w_bvalid <= True;
                 w_bresp  <= DECERR;
             end else if(rg_write_addr_done && rg_write_data_done) begin
-                for(Integer n = 0; n < valueOf(slave_count); n = n + 1) begin
+                for(Integer n = 0; n < valueOf(n); n = n + 1) begin
                     if(rg_write_target == fromInteger(n)) begin
                         w_bvalid <= vw_bvalid[n];
                         w_bresp  <= vw_bresp[n];
@@ -168,7 +155,7 @@ module mkAxi4LiteSlaveMux#(
         end else begin
             if(rg_write_valid && !rg_write_miss &&
                     !rg_write_addr_done) begin
-                for(Integer n = 0; n < valueOf(slave_count); n = n + 1) begin
+                for(Integer n = 0; n < valueOf(n); n = n + 1) begin
                     if(rg_write_target == fromInteger(n) && vw_awready[n])
                         rg_write_addr_done <= True;
                 end
@@ -179,10 +166,10 @@ module mkAxi4LiteSlaveMux#(
         end
     endrule
 
-    Vector#(slave_count, AXI4_Lite_Master_Rd_Fab#(addr_w, data_w)) v_masters_read = newVector;
-    Vector#(slave_count, AXI4_Lite_Master_Wr_Fab#(addr_w, data_w)) v_masters_write = newVector;
+    Vector#(n, AXI4_Lite_Master_Rd_Fab#(aw, dw)) v_masters_read = newVector;
+    Vector#(n, AXI4_Lite_Master_Wr_Fab#(aw, dw)) v_masters_write = newVector;
 
-    for(Integer n = 0; n < valueOf(slave_count); n = n + 1) begin
+    for(Integer n = 0; n < valueOf(n); n = n + 1) begin
         v_masters_read[n] = interface AXI4_Lite_Master_Rd_Fab;
             method arvalid = !reset_asserted && !rg_read_valid &&
                 w_arvalid && read_route_valid &&
@@ -222,7 +209,7 @@ module mkAxi4LiteSlaveMux#(
         endinterface;
     end
 
-    interface AXI4_Lite_Slave_Rd_Fab slave_read;
+    interface AXI4_Lite_Slave_Rd_Fab s_rd;
         method parvalid = w_arvalid._write;
         method paraddr  = w_araddr._write;
         method parprot  = w_arprot._write;
@@ -234,7 +221,7 @@ module mkAxi4LiteSlaveMux#(
         method rresp   = w_rresp;
     endinterface
 
-    interface AXI4_Lite_Slave_Wr_Fab slave_write;
+    interface AXI4_Lite_Slave_Wr_Fab s_wr;
         method pawvalid = w_awvalid._write;
         method pawaddr  = w_awaddr._write;
         method pawprot  = w_awprot._write;
@@ -249,8 +236,8 @@ module mkAxi4LiteSlaveMux#(
         method bresp   = w_bresp;
     endinterface
 
-    interface masters_read  = v_masters_read;
-    interface masters_write = v_masters_write;
+    interface m_rd  = v_masters_read;
+    interface m_wr = v_masters_write;
 
 endmodule
 

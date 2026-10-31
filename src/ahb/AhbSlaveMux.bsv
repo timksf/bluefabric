@@ -20,10 +20,7 @@ interface AhbSlaveMux_ifc#(
 endinterface
 
 module mkAhbSlaveMux#(
-    function AddrMapHit_t#(addr_w) decode_address(
-        Bit#(addr_w) address,
-        Bit#(addr_w) bytes
-    )
+    function Bit#(slave_count) select_target(Bit#(addr_w) address)
 )(AhbSlaveMux_ifc#(slave_count, addr_w, data_w));
 
     Wire#(Bit#(addr_w)) w_haddr     <- mkBypassWire;
@@ -41,18 +38,15 @@ module mkAhbSlaveMux#(
     Vector#(slave_count, Wire#(Bit#(data_w))) vw_hrdata <- replicateM(mkBypassWire);
     Vector#(slave_count, Wire#(Bool))         vw_hresp  <- replicateM(mkBypassWire);
 
-    Bit#(addr_w) transfer_bytes = 1 << pack(w_hsize);
-    AddrMapHit_t#(addr_w) route =
-        decode_address(w_haddr, transfer_bytes);
+    //zero or one-hot, targets get the unchanged address
+    Bit#(slave_count) sel = select_target(w_haddr);
     Bool transfer_valid = w_hsel &&
         (w_htrans == AHB_NONSEQ || w_htrans == AHB_SEQ);
-    Bool route_valid = route.hit &&
-        route.target_index < fromInteger(valueOf(slave_count)) &&
-        transfer_bytes != 0 &&
-        transfer_bytes <= fromInteger(valueOf(TDiv#(data_w, 8)));
+    Bool route_valid = sel != 0 &&
+        pack(w_hsize) <= fromInteger(valueOf(TLog#(TDiv#(data_w, 8))));
 
     Reg#(Bool)         rg_target_valid <- mkReg(False);
-    Reg#(Bit#(addr_w)) rg_target       <- mkReg(0);
+    Reg#(Bit#(slave_count)) rg_target  <- mkReg(0);
     Reg#(Bool)         rg_miss         <- mkReg(False);
     Reg#(Bool)         rg_miss_first   <- mkReg(False);
 
@@ -60,40 +54,22 @@ module mkAhbSlaveMux#(
     Wire#(Bit#(data_w)) w_hrdata    <- mkDWire(0);
     Wire#(Bool)         w_hresp     <- mkDWire(False);
 
-    rule r_select_ready;
-        if(rg_miss) begin
-            w_hreadyout <= rg_miss_first;
-        end else begin
-            for(Integer n = 0; n < valueOf(slave_count); n = n + 1) begin
-                if(rg_target_valid && rg_target == fromInteger(n)) begin
-                    w_hreadyout <= vw_hready[n];
-                end
-            end
-        end
+    rule r_select_ready(rg_miss || rg_target_valid);
+        w_hreadyout <= rg_miss ? rg_miss_first : onehot_select(rg_target, readVReg(vw_hready));
     endrule
 
-    rule r_select_read_data;
-        for(Integer n = 0; n < valueOf(slave_count); n = n + 1) begin
-            if(rg_target_valid && rg_target == fromInteger(n))
-                w_hrdata <= vw_hrdata[n];
-        end
+    rule r_select_read_data(rg_target_valid);
+        w_hrdata <= onehot_select(rg_target, readVReg(vw_hrdata));
     endrule
 
-    rule r_select_response;
-        if(rg_miss) begin
-            w_hresp <= True;
-        end else begin
-            for(Integer n = 0; n < valueOf(slave_count); n = n + 1) begin
-                if(rg_target_valid && rg_target == fromInteger(n))
-                    w_hresp <= vw_hresp[n];
-            end
-        end
+    rule r_select_response(rg_miss || rg_target_valid);
+        w_hresp <= rg_miss || onehot_select(rg_target, readVReg(vw_hresp));
     endrule
 
     rule r_update_data_phase;
         if(w_hreadyin) begin
             rg_target_valid <= transfer_valid && route_valid;
-            rg_target       <= route.target_index;
+            rg_target       <= sel;
             rg_miss         <= transfer_valid && !route_valid;
             rg_miss_first   <= False;
         end else if(rg_miss && !rg_miss_first) begin
@@ -106,9 +82,8 @@ module mkAhbSlaveMux#(
 
     for(Integer n = 0; n < valueOf(slave_count); n = n + 1) begin
         v_masters[n] = interface AhbMasterFabricShared_ifc;
-            method haddr     = route.offset;
-            method hsel      = transfer_valid && route_valid &&
-                route.target_index == fromInteger(n);
+            method haddr     = w_haddr;
+            method hsel      = transfer_valid && route_valid && sel[n] == 1;
             method htrans    = w_htrans;
             method hwrite    = w_hwrite;
             method hsize     = w_hsize;

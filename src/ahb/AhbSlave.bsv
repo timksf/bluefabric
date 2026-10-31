@@ -38,6 +38,28 @@ interface AhbSlaveFabric_ifc#(
     method Bool hresp;
 endinterface
 
+//passes everything through but cuts HADDR down to the offset inside an aligned power of two region
+//the mask is a constant, so this only drops wires
+function AhbSlaveFabric_ifc#(addr_w, data_w) ahb_local(Integer size, AhbSlaveFabric_ifc#(addr_w, data_w) s);
+    Bit#(addr_w) mask = fromInteger(size - 1);
+    return interface AhbSlaveFabric_ifc;
+        method Action pphaddr(Bit#(addr_w) a) = s.pphaddr(a & mask);
+        method pphsel                         = s.pphsel;
+        method pphtrans                       = s.pphtrans;
+        method pphwrite                       = s.pphwrite;
+        method pphsize                        = s.pphsize;
+        method pphburst                       = s.pphburst;
+        method pphprot                        = s.pphprot;
+        method pphmastlock                    = s.pphmastlock;
+        method pphwdata                       = s.pphwdata;
+        method pphreadyin                     = s.pphreadyin;
+
+        method hreadyout = s.hreadyout;
+        method hrdata    = s.hrdata;
+        method hresp     = s.hresp;
+    endinterface;
+endfunction
+
 interface AhbSlave_ifc#(
     numeric type addr_w,
     numeric type data_w

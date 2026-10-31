@@ -39,6 +39,29 @@ interface ApbSlaveFabric_ifc#(
     method Bit#(user_w) pbuser;
 endinterface
 
+//passes everything through but cuts PADDR down to the offset inside an aligned power of two region
+//the mask is a constant, so this only drops wires
+function ApbSlaveFabric_ifc#(addr_w, data_w, user_w) apb_local(Integer size, ApbSlaveFabric_ifc#(addr_w, data_w, user_w) s);
+    Bit#(addr_w) mask = fromInteger(size - 1);
+    return interface ApbSlaveFabric_ifc;
+        method Action ppaddr(Bit#(addr_w) a) = s.ppaddr(a & mask);
+        method ppsel                         = s.ppsel;
+        method ppenable                      = s.ppenable;
+        method ppwrite                       = s.ppwrite;
+        method ppwdata                       = s.ppwdata;
+        method ppstrb                        = s.ppstrb;
+        method ppprot                        = s.ppprot;
+        method ppauser                       = s.ppauser;
+        method ppwuser                       = s.ppwuser;
+
+        method pready  = s.pready;
+        method prdata  = s.prdata;
+        method pslverr = s.pslverr;
+        method pruser  = s.pruser;
+        method pbuser  = s.pbuser;
+    endinterface;
+endfunction
+
 interface ApbSlave_ifc#(
     numeric type addr_w,
     numeric type data_w,

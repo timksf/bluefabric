@@ -20,10 +20,7 @@ interface ApbSlaveMux_ifc#(
 endinterface
 
 module mkApbSlaveMux#(
-    function AddrMapHit_t#(addr_w) decode_address(
-        Bit#(addr_w) address,
-        Bit#(addr_w) bytes
-    )
+    function Bit#(slave_count) select_target(Bit#(addr_w) address)
 )(ApbSlaveMux_ifc#(slave_count, addr_w, data_w, user_w));
 
     Wire#(Bit#(addr_w))           w_paddr   <- mkBypassWire;
@@ -42,10 +39,8 @@ module mkApbSlaveMux#(
     Vector#(slave_count, Wire#(Bit#(user_w))) vw_pruser  <- replicateM(mkBypassWire);
     Vector#(slave_count, Wire#(Bit#(user_w))) vw_pbuser  <- replicateM(mkBypassWire);
 
-    AddrMapHit_t#(addr_w) route =
-        decode_address(w_paddr, fromInteger(valueOf(TDiv#(data_w, 8))));
-    Bool route_valid = route.hit &&
-        route.target_index < fromInteger(valueOf(slave_count));
+    //zero or one-hot, targets get the unchanged address
+    Bit#(slave_count) sel = select_target(w_paddr);
 
     Wire#(Bool)         w_pready  <- mkDWire(True);
     Wire#(Bit#(data_w)) w_prdata  <- mkDWire(0);
@@ -53,39 +48,13 @@ module mkApbSlaveMux#(
     Wire#(Bit#(user_w)) w_pruser  <- mkDWire(0);
     Wire#(Bit#(user_w)) w_pbuser  <- mkDWire(0);
 
-    rule r_select_ready;
-        for(Integer n = 0; n < valueOf(slave_count); n = n + 1) begin
-            if(route_valid && route.target_index == fromInteger(n))
-                w_pready <= vw_pready[n];
-        end
-    endrule
-
-    rule r_select_read_data;
-        for(Integer n = 0; n < valueOf(slave_count); n = n + 1) begin
-            if(route_valid && route.target_index == fromInteger(n))
-                w_prdata <= vw_prdata[n];
-        end
-    endrule
-
-    rule r_select_response;
-        for(Integer n = 0; n < valueOf(slave_count); n = n + 1) begin
-            if(route_valid && route.target_index == fromInteger(n))
-                w_pslverr <= vw_pslverr[n];
-        end
-    endrule
-
-    rule r_select_read_user;
-        for(Integer n = 0; n < valueOf(slave_count); n = n + 1) begin
-            if(route_valid && route.target_index == fromInteger(n))
-                w_pruser <= vw_pruser[n];
-        end
-    endrule
-
-    rule r_select_response_user;
-        for(Integer n = 0; n < valueOf(slave_count); n = n + 1) begin
-            if(route_valid && route.target_index == fromInteger(n))
-                w_pbuser <= vw_pbuser[n];
-        end
+    // Unmapped transfers complete at once with PSLVERR (wire defaults).
+    rule r_select_response(sel != 0);
+        w_pready  <= onehot_select(sel, readVReg(vw_pready));
+        w_prdata  <= onehot_select(sel, readVReg(vw_prdata));
+        w_pslverr <= onehot_select(sel, readVReg(vw_pslverr));
+        w_pruser  <= onehot_select(sel, readVReg(vw_pruser));
+        w_pbuser  <= onehot_select(sel, readVReg(vw_pbuser));
     endrule
 
     Vector#(slave_count, ApbMasterFabric_ifc#(addr_w, data_w, user_w))
@@ -93,9 +62,8 @@ module mkApbSlaveMux#(
 
     for(Integer n = 0; n < valueOf(slave_count); n = n + 1) begin
         v_masters[n] = interface ApbMasterFabric_ifc;
-            method paddr   = route.offset;
-            method psel    = w_psel && route_valid &&
-                route.target_index == fromInteger(n);
+            method paddr   = w_paddr;
+            method psel    = w_psel && sel[n] == 1;
             method penable = w_penable;
             method pwrite  = w_pwrite;
             method pwdata  = w_pwdata;

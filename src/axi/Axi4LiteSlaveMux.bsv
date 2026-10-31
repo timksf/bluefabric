@@ -1,213 +1,225 @@
 package Axi4LiteSlaveMux;
 
 import Clocks :: *;
+import DefaultValue :: *;
+import FIFOF :: *;
 import Vector :: *;
 
-import AddrMapDecoder :: *;
 import AXI4_Lite_Master :: *;
 import AXI4_Lite_Slave :: *;
 import AXI4_Lite_Types :: *;
 
+import AddrMapDecoder :: *;
+
+(* always_enabled *)
 interface Axi4LiteSlaveMux_ifc#(numeric type n, numeric type aw, numeric type dw);
+    (* prefix="" *)
+    method Action sel_rd((*port = "sel_rd"*) Bit#(n) select);
+    (* prefix="" *)
+    method Action sel_wr((*port="sel_wr"*) Bit#(n) select);
+
     interface AXI4_Lite_Slave_Rd_Fab#(aw, dw) s_rd;
     interface AXI4_Lite_Slave_Wr_Fab#(aw, dw) s_wr;
-    interface Vector#(n,AXI4_Lite_Master_Rd_Fab#(aw, dw)) m_rd;
-    interface Vector#(n,AXI4_Lite_Master_Wr_Fab#(aw, dw)) m_wr;
+    interface Vector#(n, AXI4_Lite_Master_Rd_Fab#(aw, dw)) m_rd;
+    interface Vector#(n, AXI4_Lite_Master_Wr_Fab#(aw, dw)) m_wr;
 endinterface
 
-module mkAxi4LiteSlaveMux#(
-    function AddrMapHit_t#(aw) decode_address(Bit#(aw) address, Bit#(aw) bytes)
-)(Axi4LiteSlaveMux_ifc#(n, aw, dw));
+typedef struct {
+    //outstanding transactions for each channel-pair (AR to R) and (AW to B)
+    Integer max_outstanding;
+    //responses may complete in the cycle their request is accepted
+    Bool    fall_through;
+    //removes multi-hot detection hardware, behaviour for multi-hot undefined
+    Bool    sel_onehot0;
+} Axi4LiteSlaveMuxCfg_t;
+
+instance DefaultValue#(Axi4LiteSlaveMuxCfg_t);
+    defaultValue = Axi4LiteSlaveMuxCfg_t {
+        max_outstanding: 2,
+        fall_through:    False,
+        sel_onehot0:     False
+    };
+endinstance
+
+module mkAxi4LiteSlaveMux#(Integer max_outstanding, Bool fall_through)(Axi4LiteSlaveMux_ifc#(n, aw, dw));
+    Axi4LiteSlaveMuxCfg_t cfg = defaultValue;
+    cfg.max_outstanding = max_outstanding;
+    cfg.fall_through    = fall_through;
+
+    let ifc <- mkAxi4LiteSlaveMuxCfg(cfg);
+    return ifc;
+endmodule
+
+module mkAxi4LiteSlaveMuxCfg#(Axi4LiteSlaveMuxCfg_t cfg)(Axi4LiteSlaveMux_ifc#(n, aw, dw));
+
+    if(cfg.max_outstanding < 1)
+        errorM("mkAxi4LiteSlaveMux requires max_outstanding >= 1");
 
     let reset_asserted <- isResetAsserted();
 
-    Wire#(Bool)             w_arvalid <- mkBypassWire;
-    Wire#(Bit#(aw))         w_araddr  <- mkBypassWire;
-    Wire#(AXI4_Lite_Prot)   w_arprot  <- mkBypassWire;
-    Wire#(Bool)             w_rready  <- mkBypassWire;
+    //Unguarded, owners feed always-ready outputs, and the tracking rules below state every enq/deq condition explicitly.
+    FIFOF#(Bit#(n)) f_read_owner   <- mkUGSizedFIFOF(cfg.max_outstanding);  //owner of every accepted read, oldest first
+    FIFOF#(Bit#(0)) f_write_credit <- mkUGSizedFIFOF(cfg.max_outstanding);  //one entry per write from AW until B (bounds outstanding writes)
+    FIFOF#(Bit#(n)) f_write_owner  <- mkUGSizedFIFOF(cfg.max_outstanding);  //owner of every accepted AW still waiting for its W
+    FIFOF#(Bit#(n)) f_write_resp   <- mkUGSizedFIFOF(cfg.max_outstanding);  //owner of every write with AW and W done, waiting for B
+    Reg#(Bool)      rg_early_w     <- mkReg(False);                         //W of the offered, not yet accepted AW has already completed
 
-    Wire#(Bool)                 w_arready <- mkDWire(False);
-    Wire#(Bool)                 w_rvalid  <- mkDWire(False);
-    Wire#(Bit#(dw))             w_rdata   <- mkDWire(0);
-    Wire#(AXI4_Lite_Response)   w_rresp   <- mkDWire(OKAY);
+    //upstream inputs
+    Wire#(Bit#(n))            w_sel_rd  <- mkBypassWire;
+    Wire#(Bit#(n))            w_sel_wr  <- mkBypassWire;
+    Wire#(Bool)               w_arvalid <- mkBypassWire;
+    Wire#(Bit#(aw))           w_araddr  <- mkBypassWire;
+    Wire#(AXI4_Lite_Prot)     w_arprot  <- mkBypassWire;
+    Wire#(Bool)               w_rready  <- mkBypassWire;
+    Wire#(Bool)               w_awvalid <- mkBypassWire;
+    Wire#(Bit#(aw))           w_awaddr  <- mkBypassWire;
+    Wire#(AXI4_Lite_Prot)     w_awprot  <- mkBypassWire;
+    Wire#(Bool)               w_wvalid  <- mkBypassWire;
+    Wire#(Bit#(dw))           w_wdata   <- mkBypassWire;
+    Wire#(Bit#(TDiv#(dw, 8))) w_wstrb   <- mkBypassWire;
+    Wire#(Bool)               w_bready  <- mkBypassWire;
 
-    Vector#(n, Wire#(Bool))                 vw_arready  <- replicateM(mkBypassWire);
-    Vector#(n, Wire#(Bool))                 vw_rvalid   <- replicateM(mkBypassWire);
-    Vector#(n, Wire#(Bit#(dw)))             vw_rdata    <- replicateM(mkBypassWire);
-    Vector#(n, Wire#(AXI4_Lite_Response))   vw_rresp    <- replicateM(mkBypassWire);
+    //downstream inputs
+    Vector#(n, Wire#(Bool))               vw_arready <- replicateM(mkBypassWire);
+    Vector#(n, Wire#(Bool))               vw_rvalid  <- replicateM(mkBypassWire);
+    Vector#(n, Wire#(Bit#(dw)))           vw_rdata   <- replicateM(mkBypassWire);
+    Vector#(n, Wire#(AXI4_Lite_Response)) vw_rresp   <- replicateM(mkBypassWire);
+    Vector#(n, Wire#(Bool))               vw_awready <- replicateM(mkBypassWire);
+    Vector#(n, Wire#(Bool))               vw_wready  <- replicateM(mkBypassWire);
+    Vector#(n, Wire#(Bool))               vw_bvalid  <- replicateM(mkBypassWire);
+    Vector#(n, Wire#(AXI4_Lite_Response)) vw_bresp   <- replicateM(mkBypassWire);
 
-    Bit#(aw) transfer_bytes = fromInteger(valueOf(TDiv#(dw, 8)));
-    AddrMapHit_t#(aw) read_route = decode_address(w_araddr, transfer_bytes);
-    Bool read_route_valid = read_route.hit && read_route.target_index < fromInteger(valueOf(n));
+    //check if one-hot or trust config
+    function Bit#(n) route(Bit#(n) select);
+        if(cfg.sel_onehot0)
+            return select;
+        else 
+            return (select & (select - 1)) == 0 ? select : 0;
+    endfunction
 
-    Reg#(Bool)      rg_read_valid  <- mkReg(False);
-    Reg#(Bool)      rg_read_miss   <- mkReg(False);
-    Reg#(Bit#(aw))  rg_read_target <- mkReg(0);
+    //check if the selected route is ready, if no route is selected, complete immediately (DECERR)
+    function Bool routed_ready(Bit#(n) owner, Vector#(n, Wire#(Bool)) readies);
+        return owner == 0 || (owner & pack(readVReg(readies))) != 0;
+    endfunction
 
-    rule r_select_read;
-        if(!reset_asserted && !rg_read_valid) begin
-            if(read_route_valid) begin
-                for(Integer n = 0; n < valueOf(n); n = n + 1) begin
-                    if(read_route.target_index == fromInteger(n))
-                        w_arready <= vw_arready[n];
-                end
-            end else begin
-                w_arready <= True;
-            end
-        end else if(!reset_asserted && rg_read_miss) begin
-            w_rvalid <= True;
-            w_rresp  <= DECERR;
-        end else if(!reset_asserted) begin
-            for(Integer n = 0; n < valueOf(n); n = n + 1) begin
-                if(rg_read_target == fromInteger(n)) begin
-                    w_rvalid <= vw_rvalid[n];
-                    w_rdata  <= vw_rdata[n];
-                    w_rresp  <= vw_rresp[n];
-                end
-            end
-        end
+    //DECERR for owner zero
+    function AXI4_Lite_Response select_response(Bit#(n) owner, Vector#(n, Wire#(AXI4_Lite_Response)) responses);
+        return unpack((owner == 0 ? pack(DECERR) : 0) | pack(onehot_select(owner, readVReg(responses))));
+    endfunction
+
+
+    /* read channel */
+
+    //the read channel tracks read owner by the select signal present at a valid AR transaction
+    Bit#(n) ar_route = route(w_sel_rd);                                   //zero for no or multi-hot select
+    Bool    ar_space = !reset_asserted && f_read_owner.notFull;           //read queue still has room
+    Bool    ar_ready = ar_space && routed_ready(ar_route, vw_arready);    //routes are accepted either for a zero owner(DECERR) or when the path is ready
+    Bool    ar_fire  = w_arvalid && ar_ready;
+
+    //a read is allowed when an AR transaction happened earlier or happens currently in fall through mode
+    //fall through only forwards target responses, DECERR is always queued and answered one cycle after its AR
+    Bool    r_head_valid    = !reset_asserted && (f_read_owner.notEmpty || (cfg.fall_through && w_arvalid && ar_route != 0));    //a queued owner, or in fall through the offered AR to a real target
+    Bit#(n) r_head          = (cfg.fall_through && !f_read_owner.notEmpty) ? ar_route : f_read_owner.first;                      //offered AR when fall through with empty queue, otherwise oldest queued owner
+    Bool    r_valid         = r_head_valid && (r_head == 0 || (r_head & pack(readVReg(vw_rvalid))) != 0);                        //owner zero is DECERR from the mux, otherwise the owner's RVALID
+    Bool    r_fire          = r_valid && w_rready;
+
+    rule r_track_reads;
+        //in fall through mode, the fifo still has priority to maintain correct ordering
+        Bool fall_through = r_fire && !f_read_owner.notEmpty;    //response completed together with its AR
+        if(ar_fire && !fall_through)                             //every accepted AR is queued unless fall through is on
+            f_read_owner.enq(ar_route);
+        if(r_fire && f_read_owner.notEmpty)                      //when R completes, make space again
+            f_read_owner.deq;
     endrule
 
-    rule r_update_read;
-        if(w_rvalid && w_rready) begin
-            rg_read_valid <= False;
-            rg_read_miss  <= False;
-        end else if(w_arvalid && w_arready) begin
-            rg_read_valid  <= True;
-            rg_read_miss   <= !read_route_valid;
-            rg_read_target <= read_route.target_index;
-        end
+
+    /* write channel */
+
+    Bit#(n) aw_route = route(w_sel_wr);                                   //same as AR
+    Bool    aw_space = !reset_asserted && f_write_credit.notFull;         //free credit, then owner and resp queues cannot be full either
+    Bool    aw_ready = aw_space && routed_ready(aw_route, vw_awready);    //same as AR
+    Bool    aw_fire  = w_awvalid && aw_ready;
+
+    //W uses AW order
+    Bool    w_queued       = f_write_owner.notEmpty;                                                     //an accepted AW is still waiting for its W
+    Bool    w_owner_valid  = !reset_asserted && !rg_early_w && (w_queued || (w_awvalid && aw_space));    //oldest queued AW, or live to the offered AW unless its W already went through (rg_early_w)
+    Bit#(n) w_owner        = w_queued ? f_write_owner.first : aw_route;                                  //oldest queued AW first, otherwise the offered AW
+    Bool    w_ready        = w_owner_valid && routed_ready(w_owner, vw_wready);                          //route zero consumes W without a target
+    Bool    w_fire         = w_wvalid && w_ready;
+    Bool    w_before_aw    = w_fire && !w_queued && !aw_fire;                                            //W may arrive earlier than AW
+
+    //a write completes when both its AW and W are complete
+    Bool    done_queued = w_fire && w_queued;                                  //AW already fired and W fires
+    Bool    done_live   = aw_fire && (rg_early_w || (w_fire && !w_queued));    //AW fires and we either have a W stored or are doing W live
+    Bit#(n) done_owner  = w_queued ? f_write_owner.first : aw_route;           //used to track who the response channel belongs to next
+
+    //select the correct response
+    Bool    b_next_valid    = w_queued ? w_wvalid : (w_awvalid && aw_space && (rg_early_w || w_wvalid));                              //the write completing next is offered: done_queued || done_live with all READYs high
+    Bool    b_head_valid    = !reset_asserted && (f_write_resp.notEmpty || (cfg.fall_through && b_next_valid && done_owner != 0));    //DECERR is never bypassed, it is answered one cycle after the write completes
+    Bit#(n) b_head          = (cfg.fall_through && !f_write_resp.notEmpty) ? done_owner : f_write_resp.first;                         //fall through permits live response, otherwise allowed only after the W completes
+    Bool    b_valid         = b_head_valid && (b_head == 0 || (b_head & pack(readVReg(vw_bvalid))) != 0);                             //owner zero is DECERR from the mux, otherwise the owner's BVALID
+    Bool    b_fire          = b_valid && w_bready;
+
+    rule r_track_writes;
+        Bool fall_through = b_fire && !f_write_resp.notEmpty;
+
+        //credits: +1 per accepted AW, -1 per B, both at the same time cancel out
+        if(aw_fire && !b_fire)
+            f_write_credit.enq(?);
+        if(b_fire && !aw_fire)
+            f_write_credit.deq;
+
+        if(aw_fire && !rg_early_w && !(w_fire && !w_queued))    //AW still needs its W: not sent early and not live now
+            f_write_owner.enq(aw_route);
+        if(done_queued)                                         //the oldest queued AW got its W
+            f_write_owner.deq;
+
+        if(w_before_aw)     //remember that the offered AW's W already went through
+            rg_early_w <= True;
+        else if(aw_fire)    //that AW is accepted now
+            rg_early_w <= False;
+
+        if((done_queued || done_live) && !fall_through)    //every completed write waits for B unless already answered
+            f_write_resp.enq(done_owner);
+        if(b_fire && f_write_resp.notEmpty)                //a bypassed B has nothing to dequeue
+            f_write_resp.deq;
     endrule
 
-    Wire#(Bool)                  w_awvalid <- mkBypassWire;
-    Wire#(Bit#(aw))              w_awaddr  <- mkBypassWire;
-    Wire#(AXI4_Lite_Prot)        w_awprot  <- mkBypassWire;
-    Wire#(Bool)                  w_wvalid  <- mkBypassWire;
-    Wire#(Bit#(dw))              w_wdata   <- mkBypassWire;
-    Wire#(Bit#(TDiv#(dw, 8)))    w_wstrb   <- mkBypassWire;
-    Wire#(Bool)                  w_bready  <- mkBypassWire;
 
-    Wire#(Bool)               w_awready <- mkDWire(False);
-    Wire#(Bool)               w_wready  <- mkDWire(False);
-    Wire#(Bool)               w_bvalid  <- mkDWire(False);
-    Wire#(AXI4_Lite_Response) w_bresp   <- mkDWire(OKAY);
+    Vector#(n, AXI4_Lite_Master_Rd_Fab#(aw, dw)) v_m_rd = newVector;
+    Vector#(n, AXI4_Lite_Master_Wr_Fab#(aw, dw)) v_m_wr = newVector;
 
-    Vector#(n, Wire#(Bool))               vw_awready  <- replicateM(mkBypassWire);
-    Vector#(n, Wire#(Bool))               vw_wready   <- replicateM(mkBypassWire);
-    Vector#(n, Wire#(Bool))               vw_bvalid   <- replicateM(mkBypassWire);
-    Vector#(n, Wire#(AXI4_Lite_Response)) vw_bresp    <- replicateM(mkBypassWire);
+    for(Integer i = 0; i < valueOf(n); i = i + 1) begin
+        v_m_rd[i] = interface AXI4_Lite_Master_Rd_Fab;
+            method arvalid = ar_space && w_arvalid && ar_route[i] == 1;
+            method araddr  = w_araddr;
+            method arprot  = w_arprot;
+            method rready  = r_head_valid && r_head[i] == 1 && w_rready;
 
-    AddrMapHit_t#(aw) write_route = decode_address(w_awaddr, transfer_bytes);
-    Bool write_route_valid = write_route.hit && write_route.target_index < fromInteger(valueOf(n));
-
-    Reg#(Bool)              rg_write_valid     <- mkReg(False);
-    Reg#(Bool)              rg_write_miss      <- mkReg(False);
-    Reg#(Bool)              rg_write_addr_done <- mkReg(False);
-    Reg#(Bool)              rg_write_data_done <- mkReg(False);
-    Reg#(Bit#(aw))          rg_write_target    <- mkReg(0);
-    Reg#(Bit#(aw))          rg_write_address   <- mkReg(0);
-    Reg#(AXI4_Lite_Prot)    rg_write_prot      <- mkReg(UNPRIV_SECURE_DATA);
-
-    rule r_select_write;
-        if(!reset_asserted && !rg_write_valid) begin
-            w_awready <= True;
-        end else if(!reset_asserted) begin
-            if(!rg_write_data_done) begin
-                if(rg_write_miss) begin
-                    w_wready <= True;
-                end else begin
-                    for(Integer n = 0; n < valueOf(n); n = n + 1) begin
-                        if(rg_write_target == fromInteger(n))
-                            w_wready <= vw_wready[n];
-                    end
-                end
-            end
-
-            if(rg_write_addr_done && rg_write_data_done &&
-                    rg_write_miss) begin
-                w_bvalid <= True;
-                w_bresp  <= DECERR;
-            end else if(rg_write_addr_done && rg_write_data_done) begin
-                for(Integer n = 0; n < valueOf(n); n = n + 1) begin
-                    if(rg_write_target == fromInteger(n)) begin
-                        w_bvalid <= vw_bvalid[n];
-                        w_bresp  <= vw_bresp[n];
-                    end
-                end
-            end
-        end
-    endrule
-
-    rule r_update_write;
-        if(w_bvalid && w_bready) begin
-            rg_write_valid     <= False;
-            rg_write_miss      <= False;
-            rg_write_addr_done <= False;
-            rg_write_data_done <= False;
-        end else if(w_awvalid && w_awready) begin
-            rg_write_valid     <= True;
-            rg_write_miss      <= !write_route_valid;
-            rg_write_addr_done <= !write_route_valid;
-            rg_write_data_done <= False;
-            rg_write_target    <= write_route.target_index;
-            rg_write_address   <= write_route.offset;
-            rg_write_prot      <= w_awprot;
-        end else begin
-            if(rg_write_valid && !rg_write_miss &&
-                    !rg_write_addr_done) begin
-                for(Integer n = 0; n < valueOf(n); n = n + 1) begin
-                    if(rg_write_target == fromInteger(n) && vw_awready[n])
-                        rg_write_addr_done <= True;
-                end
-            end
-
-            if(w_wvalid && w_wready)
-                rg_write_data_done <= True;
-        end
-    endrule
-
-    Vector#(n, AXI4_Lite_Master_Rd_Fab#(aw, dw)) v_masters_read = newVector;
-    Vector#(n, AXI4_Lite_Master_Wr_Fab#(aw, dw)) v_masters_write = newVector;
-
-    for(Integer n = 0; n < valueOf(n); n = n + 1) begin
-        v_masters_read[n] = interface AXI4_Lite_Master_Rd_Fab;
-            method arvalid = !reset_asserted && !rg_read_valid &&
-                w_arvalid && read_route_valid &&
-                read_route.target_index == fromInteger(n);
-            method araddr = read_route.offset;
-            method arprot = w_arprot;
-            method rready = !reset_asserted && rg_read_valid &&
-                !rg_read_miss && rg_read_target == fromInteger(n) &&
-                w_rready;
-
-            method parready = vw_arready[n]._write;
-            method prvalid  = vw_rvalid[n]._write;
-            method prdata   = vw_rdata[n]._write;
-            method prresp   = vw_rresp[n]._write;
+            method parready = vw_arready[i]._write;
+            method prvalid  = vw_rvalid[i]._write;
+            method prdata   = vw_rdata[i]._write;
+            method prresp   = vw_rresp[i]._write;
         endinterface;
 
-        v_masters_write[n] = interface AXI4_Lite_Master_Wr_Fab;
-            method awvalid = !reset_asserted && rg_write_valid &&
-                !rg_write_miss && !rg_write_addr_done &&
-                rg_write_target == fromInteger(n);
-            method awaddr  = rg_write_address;
-            method awprot  = rg_write_prot;
-            method wvalid = !reset_asserted && rg_write_valid &&
-                !rg_write_miss && !rg_write_data_done &&
-                rg_write_target == fromInteger(n) && w_wvalid;
+        v_m_wr[i] = interface AXI4_Lite_Master_Wr_Fab;
+            method awvalid = aw_space && w_awvalid && aw_route[i] == 1;
+            method awaddr  = w_awaddr;
+            method awprot  = w_awprot;
+            method wvalid  = w_owner_valid && w_owner[i] == 1 && w_wvalid;
             method wdata   = w_wdata;
             method wstrb   = w_wstrb;
-            method bready = !reset_asserted && rg_write_valid &&
-                !rg_write_miss && rg_write_addr_done &&
-                rg_write_data_done &&
-                rg_write_target == fromInteger(n) && w_bready;
+            method bready  = b_head_valid && b_head[i] == 1 && w_bready;
 
-            method pawready = vw_awready[n]._write;
-            method pwready  = vw_wready[n]._write;
-            method pbvalid  = vw_bvalid[n]._write;
-            method pbresp   = vw_bresp[n]._write;
+            method pawready = vw_awready[i]._write;
+            method pwready  = vw_wready[i]._write;
+            method pbvalid  = vw_bvalid[i]._write;
+            method pbresp   = vw_bresp[i]._write;
         endinterface;
     end
+
+    method sel_rd = w_sel_rd._write;
+    method sel_wr = w_sel_wr._write;
 
     interface AXI4_Lite_Slave_Rd_Fab s_rd;
         method parvalid = w_arvalid._write;
@@ -215,10 +227,10 @@ module mkAxi4LiteSlaveMux#(
         method parprot  = w_arprot._write;
         method prready  = w_rready._write;
 
-        method arready = w_arready;
-        method rvalid  = w_rvalid;
-        method rdata   = w_rdata;
-        method rresp   = w_rresp;
+        method arready = ar_ready;
+        method rvalid  = r_valid;
+        method rdata   = onehot_select(r_head, readVReg(vw_rdata));
+        method rresp   = select_response(r_head, vw_rresp);
     endinterface
 
     interface AXI4_Lite_Slave_Wr_Fab s_wr;
@@ -230,14 +242,14 @@ module mkAxi4LiteSlaveMux#(
         method pwstrb   = w_wstrb._write;
         method pbready  = w_bready._write;
 
-        method awready = w_awready;
-        method wready  = w_wready;
-        method bvalid  = w_bvalid;
-        method bresp   = w_bresp;
+        method awready = aw_ready;
+        method wready  = w_ready;
+        method bvalid  = b_valid;
+        method bresp   = select_response(b_head, vw_bresp);
     endinterface
 
-    interface m_rd  = v_masters_read;
-    interface m_wr = v_masters_write;
+    interface m_rd = v_m_rd;
+    interface m_wr = v_m_wr;
 
 endmodule
 

@@ -68,18 +68,12 @@ module mkTestAhbMaster(TestAhbMaster_ifc);
         rg_paused <= True;
     endrule
 
-    rule r_issue_single if(
-        rg_issued < 8 &&
-        (rg_issued < 2 || rg_issued >= 6)
-    );
+    rule r_issue_single if(rg_issued < 8 && (rg_issued < 2 || rg_issued >= 6));
         i_master.request.put(ahb_single_request(next_request));
         rg_issued <= rg_issued + 1;
     endrule
 
-    rule r_issue_burst if(
-        rg_issued >= 2 && rg_issued < 6 &&
-        (rg_issued != 4 || rg_paused)
-    );
+    rule r_issue_burst if(rg_issued >= 2 && rg_issued < 6 && (rg_issued != 4 || rg_paused));
         i_master.request.put(AhbMasterRequest_t {
             request : next_request,
             burst   : AHB_INCR4,
@@ -93,8 +87,7 @@ module mkTestAhbMaster(TestAhbMaster_ifc);
         let expected_data = 32'h55000000 | zeroExtend(rg_received);
         let expected_error = rg_received == 3;
 
-        Bool read_data_error = rg_received[0] == 0 &&
-            response.read_data != expected_data;
+        Bool read_data_error = rg_received[0] == 0 && response.read_data != expected_data;
 
         if(read_data_error || response.slave_error != expected_error)
             rg_errors <= rg_errors + 1;

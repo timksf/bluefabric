@@ -75,10 +75,7 @@ module mkTestApbMaster(TestApbMaster_ifc);
         let expected_read_user = rg_received + 1;
         let expected_response_user = rg_received + 2;
 
-        if(response.read_data != expected_data ||
-                response.slave_error != expected_error ||
-                response.read_user != expected_read_user ||
-                response.response_user != expected_response_user)
+        if(response.read_data != expected_data || response.slave_error != expected_error || response.read_user != expected_read_user || response.response_user != expected_response_user)
             rg_errors <= rg_errors + 1;
 
         rg_received <= rg_received + 1;

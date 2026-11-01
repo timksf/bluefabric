@@ -5,16 +5,20 @@ import Vector :: *;
 
 //elaboration time region, its position in the map is its select bit
 //power of two sized and aligned to its size, so a hit is a single masked compare
+//a default region has no address range and takes every address no other region claims
 typedef struct {
     Integer base;
     Integer size;
+    Bool    is_default;
 } AddrMapRegion_t;
 
 typedef Vector#(n, AddrMapRegion_t) AddrMap_t#(numeric type n);
 
 function AddrMapRegion_t addr_region(Integer base, Integer size);
-    return AddrMapRegion_t { base: base, size: size };
+    return AddrMapRegion_t { base: base, size: size, is_default: False };
 endfunction
+
+AddrMapRegion_t addr_region_default = AddrMapRegion_t { base: 0, size: 0, is_default: True };
 
 function Bool addr_map_size_is_valid(Integer size);
     if(size == 1) return True;
@@ -34,18 +38,24 @@ function String addr_map_labeled_errors(
     );
     String errors = "";
     Integer address_space = 2 ** address_width;
+    Integer defaults = 0;
     for(Integer i = 0; i < List::length(regions); i = i + 1) begin
         let region = regions[i];
         String prefix = "Address map " + labels[i] + ": ";
-        if(!addr_map_size_is_valid(region.size))
-            errors = errors + prefix + "size must be a positive power of two.\n";
-        else if(region.base % region.size != 0)
-            errors = errors + prefix + "base must be aligned to size.\n";
-        if(region.base < 0 || region.base + region.size > address_space)
-            errors = errors + prefix + "region lies outside the address space.\n";
-        for(Integer j = i + 1; j < List::length(regions); j = j + 1) begin
-            if(addr_map_regions_overlap(region, regions[j]))
-                errors = errors + prefix + "overlaps " + labels[j] + ".\n";
+        if(region.is_default) begin
+            defaults = defaults + 1;
+            if(defaults == 2)
+                errors = errors + prefix + "only one default region is allowed.\n";
+        end else begin
+            if(!addr_map_size_is_valid(region.size))
+                errors = errors + prefix + "size must be a positive power of two.\n";
+            else if(region.base % region.size != 0)
+                errors = errors + prefix + "base must be aligned to size.\n";
+            if(region.base < 0 || region.base + region.size > address_space)
+                errors = errors + prefix + "region lies outside the address space.\n";
+            for(Integer j = i + 1; j < List::length(regions); j = j + 1)
+                if(!regions[j].is_default && addr_map_regions_overlap(region, regions[j]))
+                    errors = errors + prefix + "overlaps " + labels[j] + ".\n";
         end
     end
     return errors;
@@ -63,20 +73,30 @@ endfunction
 
 //compares only the address bits above the region offset, no adder or magnitude compare
 function Bool addr_region_hit(Bit#(aw) address, AddrMapRegion_t region);
-    Bit#(aw) offset_mask = fromInteger(region.size - 1);
-    return (address & ~offset_mask) == fromInteger(region.base);
+    if(region.is_default)
+        return False;
+    else begin
+        Bit#(aw) offset_mask = fromInteger(region.size - 1);
+        return (address & ~offset_mask) == fromInteger(region.base);
+    end
 endfunction
 
+function Bit#(aw) addr_region_offset_mask(AddrMapRegion_t region) = region.is_default ? '1 : fromInteger(region.size - 1);
+
 //one-hot or zero, as validated regions never overlap
+//a miss selects the default region if there is one, otherwise nothing
 function Bit#(n) addr_map_select(AddrMap_t#(n) address_map, Bit#(aw) address);
-    return pack(Vector::map(addr_region_hit(address), address_map));
+    function Bool is_default(AddrMapRegion_t region) = region.is_default;
+    Bit#(n) hits     = pack(Vector::map(addr_region_hit(address), address_map));
+    Bit#(n) fallback = pack(Vector::map(is_default, address_map));    //constant, zero without a default region
+    return hits != 0 ? hits : fallback;
 endfunction
 
 //address bits inside the selected region, zero when nothing is selected
 function Bit#(aw) addr_map_offset(AddrMap_t#(n) address_map, Bit#(n) sel, Bit#(aw) address);
     Bit#(aw) offset_mask = 0;
     for(Integer i = 0; i < valueOf(n); i = i + 1)
-        if(sel[i] == 1) offset_mask = offset_mask | fromInteger(address_map[i].size - 1);
+        if(sel[i] == 1) offset_mask = offset_mask | addr_region_offset_mask(address_map[i]);
     return address & offset_mask;
 endfunction
 

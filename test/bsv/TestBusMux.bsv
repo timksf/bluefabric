@@ -1,6 +1,7 @@
 package TestBusMux;
 
 import Vector :: *;
+import BuildVector :: *;
 
 import AddrMapDecoder :: *;
 import ApbMaster :: *;
@@ -12,29 +13,10 @@ import AhbMasterMux :: *;
 import AhbSlave :: *;
 import AhbSlaveMux :: *;
 
-module mkTestAddrMapDecoder(AddrMapDecoder_ifc#(16));
-    method AddrMapHit_t#(16) lookup(Bit#(16) address, Bit#(16) bytes);
-        AddrMapHit_t#(16) result = AddrMapHit_t {
-            hit          : False,
-            target_index : 0,
-            global_addr  : address,
-            offset       : 0
-        };
-
-        if(bytes != 0 && address < 16'h1000 &&
-                zeroExtend(address) + zeroExtend(bytes) <= 17'h01000) begin
-            result.hit = True;
-            result.target_index = 0;
-            result.offset = address;
-        end else if(bytes != 0 && address >= 16'h1000 &&
-                zeroExtend(address) + zeroExtend(bytes) <= 17'h02000) begin
-            result.hit = True;
-            result.target_index = 1;
-            result.offset = address - 16'h1000;
-        end
-
-        return result;
-    endmethod
+module mkTestAddrMapDecoder(AddrMapDecoder_ifc#(2, 16));
+    AddrMap_t#(2) address_map = vec(addr_region('h0000, 'h1000), addr_region('h1000, 'h1000));
+    let i_decoder <- mkAddrMapDecoder(address_map);
+    return i_decoder;
 endmodule
 
 interface TestApbSlaveMux_ifc;
@@ -49,8 +31,7 @@ endinterface
 (* synthesize *)
 module mkTestApbSlaveMux(TestApbSlaveMux_ifc);
     let i_decoder <- mkTestAddrMapDecoder;
-    ApbSlaveMux_ifc#(2, 16, 32, 4) i_mux <-
-        mkApbSlaveMux(i_decoder.lookup);
+    ApbSlaveMux_ifc#(2, 16, 32, 4) i_mux <- mkApbSlaveMux(i_decoder.select);
 
     interface s_apb  = i_mux.slave;
     interface m_apb0 = i_mux.masters[0];
@@ -87,8 +68,7 @@ endinterface
 (* synthesize *)
 module mkTestAhbSlaveMux(TestAhbSlaveMux_ifc);
     let i_decoder <- mkTestAddrMapDecoder;
-    AhbSlaveMux_ifc#(2, 16, 32) i_mux <-
-        mkAhbSlaveMux(i_decoder.lookup);
+    AhbSlaveMux_ifc#(2, 16, 32) i_mux <- mkAhbSlaveMux(i_decoder.select);
 
     interface s_ahb  = i_mux.slave;
     interface m_ahb0 = i_mux.masters[0];

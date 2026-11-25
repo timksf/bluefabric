@@ -222,6 +222,7 @@ mask in the same cycle.
 | `soc/BlueAddrMap.bsv` | `create_addr_map_bus`, `create_addr_map_bus_cfg`, `mkAddrMapBus` | Builds the bus of a map, or of a collected map, for any protocol with an `AddrMapFabric` instance |
 | `soc/BlueAddrMap.bsv` | `collect_addr_map`, `create_addr_map`, `create_addr_map_with_targets` | Collects and validates a map, optionally creating its decoder and retaining target interfaces |
 | `soc/BlueAddrMap.bsv` | `doc_addr_map`, `doc_addr_map_markdown` | Generates plain-text or Markdown documentation of a collected map |
+| `soc/BlueAddrMap.bsv` | `export_addr_map_systemrdl`, `doc_addr_map_systemrdl`, `addr_map_target_doc` | Exports a bus as nested SystemRDL during elaboration, with targets that document their software view |
 | `soc/BlueInterruptMap.bsv` | `irq_map_def`, `irq_map_source` | Declares a named interrupt map and its sources |
 | `soc/BlueInterruptMap.bsv` | `create_irq_map` | Validates a map and creates the combined interrupt vector |
 | `soc/BlueInterruptMap.bsv` | `doc_irq_map` | Generates interrupt-map documentation |
@@ -329,6 +330,28 @@ AddrMapBus_ifc#(4, Axi4LiteSlaveFab_ifc#(32, 32), SocDevices_ifc) i_bus <- mkAdd
 
 `create_addr_map` and
 `create_addr_map_with_targets` only create the decoder, for hand-built fabrics.
+
+**SystemRDL export.** `export_addr_map_systemrdl(path, cfg, ctx)` writes a bus
+as SystemRDL while bsc elaborates, from the same configuration and map as the
+hardware, so a documentation top needs only this call:
+
+```bsv
+(* synthesize *)
+module mkSocDoc(Empty);
+    export_addr_map_systemrdl("soc.rdl", cfg, soc_map);
+endmodule
+```
+
+Elaborate it with `-demote-errors G0066`, because its slaves have no master.
+Plain targets appear as opaque windows. A target declared with
+`addr_map_target_doc(base, size, name, doc, target)` carries an
+`AddrMapTargetDoc_t` with its software view: the addresses the endpoint
+decodes, their span and a renderer for the SystemRDL body. Register map
+generators or the target's own declaration fill it in. `addr_map_bus` and
+`addr_map_bridge` document their nested map this way, so the export follows the
+hierarchy of the fabric.
+`mkAddrMapBus` fails when documented content lies outside its window, which
+also catches nested maps whose targets their bus or bridge target cannot reach.
 
 `create_irq_map` validates interrupt-source placement before combining the
 source vectors.

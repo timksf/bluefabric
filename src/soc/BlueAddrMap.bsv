@@ -12,13 +12,23 @@ typedef struct {
     String name;
 } AddrMapDef_t;
 
+//software view of a target for the SystemRDL export
+//addresses are those the endpoint decodes, it ignores the bits from span upwards, so the content repeats every span bytes
 typedef struct {
-    Bit#(aw) type_anchor;    //unused, only ties the address width to the entry type
-    Integer  base;
-    Integer  size;
-    Bool     is_default;     //takes every address no other target claims, base and size are unused
-    String   name;
-    endpoint target;
+    Integer span;                                                  //power of two, usually 2 ** endpoint address width
+    Integer first;                                                 //lowest address the content occupies
+    Integer limit;                                                 //one past the highest address the content occupies
+    function String _(String indent, Integer offset) systemrdl;    //addrmap body, offset is added to every address
+} AddrMapTargetDoc_t;
+
+typedef struct {
+    Bit#(aw)                   type_anchor;    //unused, only ties the address width to the entry type
+    Integer                    base;
+    Integer                    size;
+    Bool                       is_default;     //takes every address no other target claims, base and size are unused
+    String                     name;
+    Maybe#(AddrMapTargetDoc_t) doc;            //invalid for targets the export shows as opaque windows
+    endpoint                   target;
 } AddrMapTargetDef_t#(numeric type aw, type endpoint);
 
 typedef union tagged {
@@ -43,11 +53,12 @@ endinterface
 
 //everything a fabric generator needs from a context, collected once, in declaration order
 typedef struct {
-    String               name;
-    AddrMap_t#(n)        regions;
-    Vector#(n, String)   names;
-    Vector#(n, endpoint) targets;
-    ifc                  internal;
+    String                                 name;
+    AddrMap_t#(n)                          regions;
+    Vector#(n, String)                     names;
+    Vector#(n, Maybe#(AddrMapTargetDoc_t)) docs;
+    Vector#(n, endpoint)                   targets;
+    ifc                                    internal;
 } AddrMapCollected_t#(numeric type n, type endpoint, type ifc);
 
 typedef struct {
@@ -64,6 +75,7 @@ function List#(AddrMapDef_t)                        get_addr_map_def(AddrMapEntr
 function List#(AddrMapTargetDef_t#(aw, endpoint))   get_addr_map_target_def(AddrMapEntry_t#(aw, endpoint) entry)    = entry matches tagged AddrMapTargetDef .x ? Cons(x, Nil) : Nil;
     
 function String                                     get_addr_map_name(AddrMapTargetDef_t#(aw, endpoint) target)     = target.name;
+function Maybe#(AddrMapTargetDoc_t)                 get_addr_map_doc(AddrMapTargetDef_t#(aw, endpoint) target)      = target.doc;
 function endpoint                                   get_addr_map_target(AddrMapTargetDef_t#(aw, endpoint) target)   = target.target;
 function AddrMapRegion_t                            get_addr_map_region(AddrMapTargetDef_t#(aw, endpoint) target)   = target.is_default ? addr_region_default : addr_region(target.base, target.size);
 
@@ -112,17 +124,26 @@ module [AddrMapCtx_t#(aw, endpoint)] addr_map_def#(String name)();
     addToCollection(entry);
 endmodule
 
-module [AddrMapCtx_t#(aw, endpoint)] addr_map_target#(Integer base, Integer size, String name, endpoint target)();
+module [AddrMapCtx_t#(aw, endpoint)] addr_map_target_entry#(Integer base, Integer size, String name, Maybe#(AddrMapTargetDoc_t) doc, endpoint target)();
     let errors = addr_map_region_errors(Cons(addr_region(base, size), Nil), valueOf(aw));
     if(errors != "") errorM("BlueAddrMap target " + name + ": " + errors);
 
-    AddrMapEntry_t#(aw, endpoint) entry = tagged AddrMapTargetDef AddrMapTargetDef_t { type_anchor: 0, base: base, size: size, is_default: False, name: name, target: target };
+    AddrMapEntry_t#(aw, endpoint) entry = tagged AddrMapTargetDef AddrMapTargetDef_t { type_anchor: 0, base: base, size: size, is_default: False, name: name, doc: doc, target: target };
     addToCollection(entry);
+endmodule
+
+module [AddrMapCtx_t#(aw, endpoint)] addr_map_target#(Integer base, Integer size, String name, endpoint target)();
+    addr_map_target_entry(base, size, name, tagged Invalid, target);
+endmodule
+
+//a target with a documented software view
+module [AddrMapCtx_t#(aw, endpoint)] addr_map_target_doc#(Integer base, Integer size, String name, AddrMapTargetDoc_t doc, endpoint target)();
+    addr_map_target_entry(base, size, name, tagged Valid doc, target);
 endmodule
 
 //receives every access that hits no other target, instead of an error response from the fabric
 module [AddrMapCtx_t#(aw, endpoint)] addr_map_default#(String name, endpoint target)();
-    AddrMapEntry_t#(aw, endpoint) entry = tagged AddrMapTargetDef AddrMapTargetDef_t { type_anchor: 0, base: 0, size: 0, is_default: True, name: name, target: target };
+    AddrMapEntry_t#(aw, endpoint) entry = tagged AddrMapTargetDef AddrMapTargetDef_t { type_anchor: 0, base: 0, size: 0, is_default: True, name: name, doc: tagged Invalid, target: target };
     addToCollection(entry);
 endmodule
 
@@ -139,6 +160,7 @@ module [Module] collect_addr_map#(AddrMapCtx_t#(aw, endpoint, ifc) ctx)(AddrMapC
         name:     validation.map_name,
         regions:  toVector(List::map(get_addr_map_region, target_defs)),
         names:    toVector(List::map(get_addr_map_name, target_defs)),
+        docs:     toVector(List::map(get_addr_map_doc, target_defs)),
         targets:  toVector(List::map(get_addr_map_target, target_defs)),
         internal: map_device
     };
@@ -249,6 +271,9 @@ module [Module] mkAddrMapBus#(AddrMapBusCfg_t#(router_cfg, cut_cfg) cfg, AddrMap
         Connectable#(port, endpoint)
     );
 
+    let doc_errors = addr_map_doc_errors(toList(addr_map.names), toList(addr_map.regions), toList(addr_map.docs), cfg.local_addr);
+    if(doc_errors != "") errorM(doc_errors);
+
     AddrMapDecoder_ifc#(n, aw)                   i_decoder <- mkAddrMapDecoder(addr_map.regions);
     AddrMapRouter_ifc#(n, r, aw, endpoint, port) i_router  <- mkAddrMapRouter(cfg.router);
 
@@ -344,8 +369,9 @@ module [AddrMapCtx_t#(aw, endpoint)] addr_map_bus#(Integer base, Integer size, S
         AddrMapCutCfg#(cut_cfg),
         Connectable#(port, endpoint)
     );
-    AddrMapBus_ifc#(n, endpoint, ifc) i_bus <- liftModule(create_addr_map_bus_cfg(cfg, sub));
-    addr_map_target(base, size, name, i_bus.up);
+    AddrMapCollected_t#(n, endpoint, ifc) sub_map <- liftModule(collect_addr_map(sub));
+    AddrMapBus_ifc#(n, endpoint, ifc)     i_bus   <- liftModule(mkAddrMapBus(cfg, sub_map));
+    addr_map_target_doc(base, size, name, addr_map_bus_doc(2 ** valueOf(aw), cfg.local_addr, sub_map), i_bus.up);
     interface internal = i_bus.internal;
 endmodule
 
@@ -362,9 +388,10 @@ module [AddrMapCtx_t#(aw, endpoint)] addr_map_bridge#(Integer base, Integer size
         Connectable#(port, sub_endpoint),
         AddrMapBridge#(endpoint, sub_endpoint)
     );
-    AddrMapBus_ifc#(n, sub_endpoint, ifc) i_bus    <- liftModule(create_addr_map_bus_cfg(cfg, sub));
-    endpoint                              i_bridge <- liftModule(mkAddrMapBridge(i_bus.up));
-    addr_map_target(base, size, name, i_bridge);
+    AddrMapCollected_t#(n, sub_endpoint, ifc) sub_map  <- liftModule(collect_addr_map(sub));
+    AddrMapBus_ifc#(n, sub_endpoint, ifc)     i_bus    <- liftModule(mkAddrMapBus(cfg, sub_map));
+    endpoint                                  i_bridge <- liftModule(mkAddrMapBridge(i_bus.up));
+    addr_map_target_doc(base, size, name, addr_map_bus_doc(2 ** valueOf(sub_aw), cfg.local_addr, sub_map), i_bridge);
     interface internal = i_bus.internal;
 endmodule
 
@@ -427,5 +454,114 @@ function AddrMapDoc_t doc_addr_map_markdown(AddrMapCollected_t#(n, endpoint, ifc
     end
     return AddrMapDoc_t { text: text };
 endfunction
+
+/* SystemRDL export */
+
+/*
+ * Targets with a documented software view nest it as an addrmap, every other target is an opaque window.
+ * Bus and bridge targets document their own map, so the export follows the hierarchy of the fabric.
+ * Instances sit at their window base relative to the enclosing addrmap. The shift moves the addresses
+ * an endpoint decodes to offsets inside its window. With local_addr the endpoint sees the window offset,
+ * otherwise it sees the full address, reduced to its span.
+ */
+
+function Integer addr_map_doc_shift(AddrMapRegion_t region, AddrMapTargetDoc_t doc, Bool local_addr);
+    Integer view_base = local_addr ? 0 : region.base;
+    return -(view_base % doc.span);
+endfunction
+
+function Bool addr_map_doc_empty(AddrMapTargetDoc_t doc) = doc.first >= doc.limit;
+
+//documented content outside its window is unreachable, so it fails the build
+function String addr_map_doc_errors(List#(String) names, List#(AddrMapRegion_t) regions, List#(Maybe#(AddrMapTargetDoc_t)) docs, Bool local_addr);
+    String errors = "";
+    for(Integer i = 0; i < List::length(names); i = i + 1) begin
+        let region = regions[i];
+        if(docs[i] matches tagged Valid .doc &&& !region.is_default && !addr_map_doc_empty(doc)) begin
+            Integer view_first = -addr_map_doc_shift(region, doc, local_addr);
+            if(doc.first < view_first || doc.limit > view_first + region.size)
+                errors = addr_map_append_newline(errors, "BlueAddrMap target " + names[i]
+                    + ": content at 0x" + addr_map_integer_to_hex(doc.first) + " - 0x" + addr_map_integer_to_hex(doc.limit - 1)
+                    + " lies outside its window, which the target sees as 0x" + addr_map_integer_to_hex(view_first)
+                    + " - 0x" + addr_map_integer_to_hex(view_first + region.size - 1) + ".");
+        end
+    end
+    return errors;
+endfunction
+
+//SystemRDL identifiers take letters, digits and underscores, the backslash escapes keywords
+function String addr_map_rdl_identifier(String name);
+    function Char legal(Char c) = (isAlphaNum(c) || c == "_") ? c : "_";
+    List#(Char) chars = List::map(legal, stringToCharList(name));
+    String      lead  = (List::isNull(chars) || isDigit(List::head(chars))) ? "_" : "";
+    return "\\" + lead + charListToString(chars);
+endfunction
+
+function String addr_map_render_systemrdl(List#(String) names, List#(AddrMapRegion_t) regions, List#(Maybe#(AddrMapTargetDoc_t)) docs, Bool local_addr, String indent, Integer offset);
+    String text = "";
+    for(Integer i = 0; i < List::length(names); i = i + 1) begin
+        let    region    = regions[i];
+        String placement = " " + addr_map_rdl_identifier(names[i]) + " @ 0x" + addr_map_integer_to_hex(region.base + offset) + ";\n";
+        if(!region.is_default) begin
+            if(docs[i] matches tagged Valid .doc &&& !addr_map_doc_empty(doc))
+                text = text + indent + "addrmap {\n"
+                    + doc.systemrdl(indent + "  ", addr_map_doc_shift(region, doc, local_addr))
+                    + indent + "}" + placement;
+            else
+                text = text + indent + "external mem {\n"
+                    + indent + "  desc = \"Opaque address window. Its layout and access are not described.\";\n"
+                    + indent + "  mementries = " + integerToString(region.size) + ";\n"
+                    + indent + "  memwidth = 8;\n"
+                    + indent + "  sw = na;\n"
+                    + indent + "}" + placement;
+        end
+    end
+    return text;
+endfunction
+
+//software view of a whole bus, a bus or bridge target carries it so the export nests its targets
+function AddrMapTargetDoc_t addr_map_bus_doc(Integer span, Bool local_addr, AddrMapCollected_t#(n, endpoint, ifc) addr_map);
+    let     regions = toList(addr_map.regions);
+    Integer first   = span;
+    Integer limit   = 0;
+    for(Integer i = 0; i < valueOf(n); i = i + 1)
+        if(!regions[i].is_default) begin
+            first = min(first, regions[i].base);
+            limit = max(limit, regions[i].base + regions[i].size);
+        end
+
+    return AddrMapTargetDoc_t {
+        span:      span,
+        first:     first,
+        limit:     limit,
+        systemrdl: addr_map_render_systemrdl(toList(addr_map.names), regions, toList(addr_map.docs), local_addr)
+    };
+endfunction
+
+//elaborates the context like the bus built from cfg and ctx, so the export describes the same map
+module [Module] doc_addr_map_systemrdl#(AddrMapBusCfg_t#(router_cfg, cut_cfg) cfg, AddrMapCtx_t#(aw, endpoint, ifc) ctx)(AddrMapDoc_t);
+    let {map_device, entries} <- getCollection(ctx);
+    let targets    = List::concat(List::map(get_addr_map_target_def, entries));
+    let validation = validate_addr_map_entries(entries);
+    let names      = List::map(get_addr_map_name, targets);
+    let regions    = List::map(get_addr_map_region, targets);
+    let docs       = List::map(get_addr_map_doc, targets);
+    let doc_errors = addr_map_doc_errors(names, regions, docs, cfg.local_addr);
+
+    if(!validation.valid) errorM(validation.errors);
+    if(doc_errors != "")  errorM(doc_errors);
+
+    String body = addr_map_render_systemrdl(names, regions, docs, cfg.local_addr, "  ", 0);
+    return AddrMapDoc_t { text: "addrmap " + addr_map_rdl_identifier(validation.map_name) + " {\n" + body + "};\n" };
+endmodule
+
+//writes the SystemRDL export while bsc elaborates, so a documentation top needs only this call
+module [Module] export_addr_map_systemrdl#(String path, AddrMapBusCfg_t#(router_cfg, cut_cfg) cfg, AddrMapCtx_t#(aw, endpoint, ifc) ctx)(Empty);
+    AddrMapDoc_t doc <- doc_addr_map_systemrdl(cfg, ctx);
+    Handle       fh  <- openFile(path, WriteMode);
+    hPutStr(fh, doc.text);
+    hClose(fh);
+    messageM("BlueAddrMap SystemRDL export written to " + path);
+endmodule
 
 endpackage
